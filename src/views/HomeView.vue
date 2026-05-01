@@ -1,9 +1,14 @@
 
 <script setup lang="ts">
-import { ref, reactive, nextTick, onMounted } from 'vue'
+import { ref, reactive, nextTick, onMounted, computed } from 'vue'
 import { agentApi, chatApi } from '@/api/chat'
+import { userApi } from '@/api/user'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
+interface User {
+  id: string
+  username: string
+}
 interface Agent {
   id: string
   name: string
@@ -19,7 +24,7 @@ interface Message {
 }
 
 interface Conversation {
-  conversationId: string
+  id: string
   agentId: string
   title: string
   createdAt: string
@@ -38,6 +43,13 @@ const inputText = ref('')
 const isLoading = ref(false)
 const messagesEndRef = ref<HTMLElement | null>(null)
 
+// ─── Auth State ──────────────────────────────────────────────────────────────
+const currentUser = ref<User | null>(null)
+const isLoggedIn = computed(() => !!currentUser.value)
+const showLoginModal = ref(false)
+const loginForm = reactive({ username: '', password: '' })
+const isLoggingIn = ref(false)
+
 // ─── Dialogs ─────────────────────────────────────────────────────────────────
 const showCreateAgent = ref(false)
 const showNewChat = ref(false)
@@ -51,6 +63,50 @@ const newAgent = reactive({
 })
 
 const newChatAgentId = ref('')
+
+// ─── Auth Methods ────────────────────────────────────────────────────────────
+async function handleLogin() {
+  if (!loginForm.username || !loginForm.password) return
+  isLoggingIn.value = true
+  try {
+    const res = await userApi.login(loginForm)
+    if (res.status === 200) {
+      const user = res.data
+      currentUser.value = user
+      localStorage.setItem('agent_user_id', user.id)
+      localStorage.setItem('agent_username', user.username)
+      showLoginModal.value = false
+      // 清空表单
+      loginForm.username = ''
+      loginForm.password = ''
+      // 登录成功后刷新数据
+      await loadAgents()
+      await loadConversations()
+    }
+  } catch (e) {
+    alert('登录失败，请检查用户名或密码')
+  } finally {
+    isLoggingIn.value = false
+  }
+}
+
+function handleLogout() {
+  currentUser.value = null
+  localStorage.removeItem('agent_user_id')
+  localStorage.removeItem('agent_username')
+  agents.value = []
+  conversations.value = []
+  selectedConversation.value = null
+  messages.value = []
+}
+
+function checkAuth(callback: Function) {
+  if (!isLoggedIn.value) {
+    showLoginModal.value = true
+  } else {
+    callback()
+  }
+}
 
 // ─── API calls ───────────────────────────────────────────────────────────────
 async function loadAgents() {
@@ -71,13 +127,17 @@ async function loadConversations() {
   }
 }
 
-async function loadHistory(conversationId: string) {
+async function loadHistory(id: string) {
+  if (!id || id === 'undefined') return
   try {
-    const res = await chatApi.getHistory(conversationId)
-    messages.value = res.data
+    const res = await chatApi.getHistory(id)
+    // 确保 res.data 是数组，如果是 ResponseEntity 结构则读取 body
+    const data = res.data
+    messages.value = Array.isArray(data) ? data : (data?.body || [])
     scrollToBottom()
   } catch (e) {
-    console.error(e)
+    console.error('加载历史记录失败:', e)
+    messages.value = [] // 报错时清空，防止渲染错误
   }
 }
 
@@ -132,15 +192,19 @@ async function startNewChat() {
 }
 
 async function selectConversation(conv: Conversation) {
+  // 1. 立即设置选中状态，让 UI 切换
   selectedConversation.value = conv
   selectedAgent.value = agents.value.find(a => a.id === conv.agentId) ?? null
-  await loadHistory(conv.conversationId)
+  // 2. 先清空当前消息，显示加载状态（可选）或空记录
+  messages.value = []
+  // 3. 异步加载历史
+  await loadHistory(conv.id)
 }
 
 async function deleteConversation(id: string) {
   try {
     await chatApi.deleteConversation(id)
-    if (selectedConversation.value?.conversationId === id) {
+    if (selectedConversation.value?.id === id) {
       selectedConversation.value = null
       messages.value = []
     }
@@ -161,7 +225,7 @@ async function sendMessage() {
 
   try {
     const res = await chatApi.sendMessage({
-      conversationId: selectedConversation.value.conversationId,
+      conversationId: selectedConversation.value.id,
       content: text
     })
     messages.value.push({ role: 'assistant', content: res.data.content, timestamp: new Date().toISOString() })
@@ -191,8 +255,13 @@ function formatTime(ts: string) {
 }
 
 onMounted(() => {
-  loadAgents()
-  loadConversations()
+  const userId = localStorage.getItem('agent_user_id')
+  const username = localStorage.getItem('agent_username')
+  if (userId && username) {
+    currentUser.value = { id: userId, username }
+    loadAgents()
+    loadConversations()
+  }
 })
 </script>
 
@@ -206,7 +275,7 @@ onMounted(() => {
       </div>
 
       <!-- New Chat Button -->
-      <button class="btn-new-chat" @click="showNewChat = true">
+      <button class="btn-new-chat" @click="checkAuth(() => showNewChat = true)">
         <span class="icon">✏️</span> 新建对话
       </button>
 
@@ -221,19 +290,19 @@ onMounted(() => {
         <div v-if="conversations.length === 0" class="empty-hint">暂无对话，点击「新建对话」开始</div>
         <div
           v-for="conv in conversations"
-          :key="conv.conversationId"
-          :class="['list-item', selectedConversation?.conversationId === conv.conversationId && 'active']"
+          :key="conv.id"
+          :class="['list-item', selectedConversation?.id === conv.id && 'active']"
           @click="selectConversation(conv)"
         >
           <span class="item-icon">💬</span>
           <span class="item-title">{{ conv.title }}</span>
-          <button class="item-delete" @click.stop="deleteConversation(conv.conversationId)" title="删除">✕</button>
+          <button class="item-delete" @click.stop="deleteConversation(conv.id)" title="删除">✕</button>
         </div>
       </div>
 
       <!-- Agents List -->
       <div v-if="sidebarTab === 'agents'" class="list-container">
-        <button class="btn-create-agent" @click="showCreateAgent = true">+ 创建 Agent</button>
+        <button class="btn-create-agent" @click="checkAuth(() => showCreateAgent = true)">+ 创建 Agent</button>
         <div v-if="agents.length === 0" class="empty-hint">暂无 Agent</div>
         <div
           v-for="agent in agents"
@@ -248,6 +317,20 @@ onMounted(() => {
           <button class="item-delete" @click.stop="deleteAgent(agent.id)" title="删除">✕</button>
         </div>
       </div>
+
+      <!-- User Card -->
+      <div class="sidebar-user">
+        <div v-if="isLoggedIn" class="user-card">
+          <div class="user-avatar">👤</div>
+          <div class="user-info">
+            <div class="username">{{ currentUser?.username }}</div>
+            <div class="logout-link" @click="handleLogout">退出登录</div>
+          </div>
+        </div>
+        <button v-else class="btn-login-trigger" @click="showLoginModal = true">
+          登录以同步数据
+        </button>
+      </div>
     </aside>
 
     <!-- ══════════════ MAIN CHAT AREA ══════════════ -->
@@ -257,10 +340,11 @@ onMounted(() => {
       <div v-if="!selectedConversation" class="welcome-screen">
         <div class="welcome-logo">🤖</div>
         <h1 class="welcome-title">AgentChat</h1>
-        <p class="welcome-sub">选择一个对话，或新建对话开始聊天</p>
+        <p class="welcome-sub">{{ isLoggedIn ? '选择一个对话，或新建对话开始聊天' : '登录以解锁 AI Agent 创作与对话功能' }}</p>
         <div class="welcome-actions">
-          <button class="btn-primary" @click="showNewChat = true">✏️ 新建对话</button>
-          <button class="btn-secondary" @click="showCreateAgent = true; sidebarTab = 'agents'">🧠 创建 Agent</button>
+          <button v-if="isLoggedIn" class="btn-primary" @click="showNewChat = true">✏️ 新建对话</button>
+          <button v-else class="btn-primary" @click="showLoginModal = true">🚀 立即登录</button>
+          <button class="btn-secondary" @click="checkAuth(() => { showCreateAgent = true; sidebarTab = 'agents' })">🧠 创建 Agent</button>
         </div>
       </div>
 
@@ -283,16 +367,18 @@ onMounted(() => {
             <p>发送消息开始对话 👋</p>
           </div>
 
-          <div v-for="(msg, idx) in messages" :key="idx" :class="['message-row', msg.role]">
-            <div class="avatar">
-              <span v-if="msg.role === 'user'">👤</span>
-              <span v-else>🤖</span>
+          <template v-for="(msg, idx) in messages" :key="idx">
+            <div v-if="msg?.content?.trim()" :class="['message-row', msg.role]">
+              <div class="avatar">
+                <span v-if="msg.role === 'user'">👤</span>
+                <span v-else>🤖</span>
+              </div>
+              <div class="bubble-wrap">
+                <div class="bubble">{{ msg.content }}</div>
+                <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
+              </div>
             </div>
-            <div class="bubble-wrap">
-              <div class="bubble">{{ msg.content }}</div>
-              <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
-            </div>
-          </div>
+          </template>
 
           <!-- Loading indicator -->
           <div v-if="isLoading" class="message-row assistant">
@@ -405,6 +491,33 @@ onMounted(() => {
         <div class="modal-footer">
           <button class="btn-secondary" @click="showNewChat = false">取消</button>
           <button class="btn-primary" :disabled="!newChatAgentId" @click="startNewChat">开始对话</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════ LOGIN DIALOG ══════════════ -->
+    <div v-if="showLoginModal" class="modal-overlay" @click.self="showLoginModal = false">
+      <div class="modal login-modal">
+        <div class="modal-header">
+          <h2>欢迎回来</h2>
+          <button class="modal-close" @click="showLoginModal = false">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="modal-subtext">登录以管理您的 Agent 和对话记录</p>
+          <div class="form-group">
+            <label>用户名</label>
+            <input v-model="loginForm.username" placeholder="请输入用户名" class="form-input" @keyup.enter="handleLogin" />
+          </div>
+          <div class="form-group">
+            <label>密码</label>
+            <input v-model="loginForm.password" type="password" placeholder="请输入密码" class="form-input" @keyup.enter="handleLogin" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-primary btn-block" :disabled="isLoggingIn" @click="handleLogin">
+            {{ isLoggingIn ? '登录中...' : '立即登录' }}
+          </button>
+          <p class="modal-footer-hint">默认账户: admin / 123456 (新用户将自动注册)</p>
         </div>
       </div>
     </div>
@@ -799,6 +912,81 @@ onMounted(() => {
   flex-direction: column;
   overflow: hidden;
 }
+
+/* ── User & Login Styles ────────────────────────────────────────────────── */
+.sidebar-user {
+  padding: 16px;
+  border-top: 1px solid #2a2a2a;
+  background: #161616;
+}
+
+.user-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.user-avatar {
+  width: 36px;
+  height: 36px;
+  background: #4d6bfe;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.user-info {
+  flex: 1;
+}
+
+.username {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.logout-link {
+  font-size: 12px;
+  color: #666;
+  cursor: pointer;
+  margin-top: 2px;
+  transition: color 0.2s;
+}
+.logout-link:hover { color: #ff5555; }
+
+.btn-login-trigger {
+  width: 100%;
+  padding: 10px;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 8px;
+  color: #ccc;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-login-trigger:hover { background: #333; color: #fff; }
+
+.login-modal { width: 400px; }
+.modal-subtext { color: #666; font-size: 13px; margin-bottom: 20px; }
+.btn-block { width: 100%; margin-top: 10px; padding: 12px; }
+.modal-footer-hint { font-size: 11px; color: #444; margin-top: 12px; text-align: center; width: 100%; }
+
+.form-group label { display: block; margin-bottom: 6px; font-size: 13px; color: #888; }
+.form-input {
+  width: 100%;
+  padding: 10px 12px;
+  background: #0f0f0f;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.form-input:focus { border-color: #4d6bfe; }
 .modal-header {
   display: flex;
   align-items: center;
