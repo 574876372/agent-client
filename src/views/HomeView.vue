@@ -57,12 +57,19 @@ const showNewChat = ref(false)
 const newAgent = reactive({
   name: '',
   description: '',
-  modelType: 'deepseek',
-  modelName: 'deepseek-chat',
+  modelType: '',
+  modelName: '',
   systemPrompt: ''
 })
 
+const modelProviders = ref<{type: string, models: string[]}[]>([])
+const availableModels = computed(() => {
+  const provider = modelProviders.value.find(p => p.type.toLowerCase() === newAgent.modelType.toLowerCase())
+  return provider ? provider.models : []
+})
+
 const newChatAgentId = ref('')
+
 
 // ─── Auth Methods ────────────────────────────────────────────────────────────
 async function handleLogin() {
@@ -118,7 +125,21 @@ async function loadAgents() {
   }
 }
 
+async function loadModelProviders() {
+  try {
+    const res = await agentApi.getModelProviders()
+    modelProviders.value = res.data
+    if (modelProviders.value.length > 0) {
+      newAgent.modelType = modelProviders.value[0].type
+      newAgent.modelName = modelProviders.value[0].models[0]
+    }
+  } catch (e) {
+    console.error('加载模型列表失败:', e)
+  }
+}
+
 async function loadConversations() {
+
   try {
     const res = await chatApi.listConversations()
     conversations.value = res.data
@@ -153,11 +174,12 @@ async function createAgent() {
     Object.assign(newAgent, {
       name: '',
       description: '',
-      modelType: 'deepseek',
-      modelName: 'deepseek-chat',
+      modelType: modelProviders.value[0]?.type || '',
+      modelName: modelProviders.value[0]?.models[0] || '',
       systemPrompt: ''
     })
     await loadAgents()
+
   } catch (e) {
     console.error(e)
   }
@@ -255,6 +277,7 @@ function formatTime(ts: string) {
 }
 
 onMounted(() => {
+  loadModelProviders() // 无论是否登录都先加载模型配置
   const userId = localStorage.getItem('agent_user_id')
   const username = localStorage.getItem('agent_username')
   if (userId && username) {
@@ -436,15 +459,21 @@ onMounted(() => {
           </div>
           <div class="form-group">
             <label>模型厂商 <span class="required">*</span></label>
-            <select v-model="newAgent.modelType" class="form-input">
-              <option value="qwen">通义千问 (Qwen)</option>
-              <option value="deepseek">DeepSeek</option>
+            <select v-model="newAgent.modelType" class="form-input" @change="newAgent.modelName = availableModels[0] || ''">
+              <option v-for="p in modelProviders" :key="p.type" :value="p.type">
+                {{ p.type }}
+              </option>
             </select>
           </div>
           <div class="form-group">
             <label>模型名称 <span class="required">*</span></label>
-            <input v-model="newAgent.modelName" placeholder="如 deepseek-chat / Qwen3.5-27B" class="form-input" />
+            <select v-model="newAgent.modelName" class="form-input">
+              <option v-for="m in availableModels" :key="m" :value="m">
+                {{ m }}
+              </option>
+            </select>
           </div>
+
           <div class="form-group">
             <label>系统提示词</label>
             <textarea v-model="newAgent.systemPrompt" placeholder="设定 Agent 的角色和行为..." class="form-input form-textarea" rows="4"></textarea>

@@ -35,7 +35,8 @@ export const agentApi = {
   getAgent: (id: string) => api.get(`/agents/${id}`),
   createAgent: (data: any) => api.post('/agents', data),
   deleteAgent: (id: string) => api.delete(`/agents/${id}`),
-  chat: (id: string, data: any) => api.post(`/agents/${id}/chat`, data)
+  chat: (id: string, data: any) => api.post(`/agents/${id}/chat`, data),
+  getModelProviders: () => api.get('/agents/models')
 }
 
 export const chatApi = {
