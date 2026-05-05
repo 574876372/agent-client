@@ -1,34 +1,5 @@
-import axios from 'axios'
+import api from './request'
 
-const api = axios.create({
-  baseURL: 'http://localhost:8080/api',
-  timeout: 30000,
-  headers: {
-    'Content-Type': 'application/json'
-  }
-})
-
-api.interceptors.request.use(config => {
-  const userId = localStorage.getItem('agent_user_id')
-  if (userId) {
-    config.headers['X-User-Id'] = userId
-  }
-  return config
-})
-
-api.interceptors.response.use(
-  response => response,
-  error => {
-    if (error.response) {
-      console.error('API Error:', error.response.status, error.response.data)
-    } else if (error.request) {
-      console.error('Network Error:', error.request)
-    } else {
-      console.error('Request Error:', error.message)
-    }
-    return Promise.reject(error)
-  }
-)
 
 export const agentApi = {
   getAgents: () => api.get('/agents'),

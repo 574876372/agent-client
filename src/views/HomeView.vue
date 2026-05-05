@@ -70,6 +70,17 @@ const availableModels = computed(() => {
 
 const newChatAgentId = ref('')
 
+const promptTemplates = [
+  { name: '自定义', prompt: '' },
+  { name: '翻译官', prompt: '你是一个专业的翻译官，能够精准地将用户输入的文本翻译成多种语言，并提供相关的语言建议。' },
+  { name: '代码专家', prompt: '你是一个资深的软件工程师，擅长编写高质量、可维护的代码，并能对代码进行深度审计和优化。' },
+  { name: '心理医生', prompt: '你是一个温暖、耐心的心理医生，能够倾听用户的烦恼，并提供专业、科学的心理疏导和建议。' }
+]
+
+function applyTemplate(template: any) {
+  newAgent.systemPrompt = template.prompt
+}
+
 
 // ─── Auth Methods ────────────────────────────────────────────────────────────
 async function handleLogin() {
@@ -168,7 +179,8 @@ async function createAgent() {
     await agentApi.createAgent({
       name: newAgent.name,
       modelType: newAgent.modelType,
-      modelName: newAgent.modelName
+      modelName: newAgent.modelName,
+      systemPrompt: newAgent.systemPrompt
     })
     showCreateAgent.value = false
     Object.assign(newAgent, {
@@ -472,6 +484,20 @@ onMounted(() => {
                 {{ m }}
               </option>
             </select>
+          </div>
+
+          <div class="form-group">
+            <label>提示词模板</label>
+            <div class="template-tags">
+              <span
+                v-for="t in promptTemplates"
+                :key="t.name"
+                class="tag"
+                @click="applyTemplate(t)"
+              >
+                {{ t.name }}
+              </span>
+            </div>
           </div>
 
           <div class="form-group">
@@ -1086,4 +1112,25 @@ onMounted(() => {
 .agent-select-name { font-size: 14px; color: #fff; font-weight: 500; }
 .agent-select-desc { font-size: 12px; color: #555; margin-top: 2px; }
 .check { margin-left: auto; color: #4d6bfe; font-weight: 700; font-size: 16px; }
+.template-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.tag {
+  padding: 4px 10px;
+  background: #252525;
+  border: 1px solid #333;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #aaa;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.tag:hover {
+  border-color: #4d6bfe;
+  color: #4d6bfe;
+  background: #1a1a2e;
+}
 </style>
