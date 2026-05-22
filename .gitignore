@@ -26,3 +26,6 @@ dist-ssr
 # Test coverage
 coverage
 *.lcov
+
+# TypeScript build cache
+*.tsbuildinfo

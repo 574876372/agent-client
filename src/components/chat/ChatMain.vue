@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { chatApi } from '@/api/chat'
 import md from '@/utils/markdown'
+import { parseMessageContent } from '@/utils/parser'
 
 interface Agent {
   id: string
@@ -54,6 +55,33 @@ async function loadHistory(id: string) {
   }
 }
 
+// ── 打字机效果队列与核心逻辑 ──────────────────────────────────────
+let typewriterQueue = ''
+let typewriterIntervalId: any = null
+
+function startTypewriter(msgIdx: number) {
+  if (typewriterIntervalId) {
+    clearInterval(typewriterIntervalId)
+  }
+  
+  typewriterIntervalId = setInterval(() => {
+    if (typewriterQueue.length > 0) {
+      // 动态控制速度：积压字符多时加速输入以减少长包延迟，空闲时丝滑打字
+      const count = typewriterQueue.length > 30 ? 6 : typewriterQueue.length > 15 ? 3 : 1
+      const chars = typewriterQueue.slice(0, count)
+      typewriterQueue = typewriterQueue.slice(count)
+      
+      messages.value[msgIdx].content += chars
+      scrollToBottom()
+    } else {
+      if (!isLoading.value) {
+        clearInterval(typewriterIntervalId)
+        typewriterIntervalId = null
+      }
+    }
+  }, 15) // 15ms 的高频微帧更新，流畅度极其卓越
+}
+
 async function sendMessage() {
   const text = inputText.value.trim()
   if (!text || !props.selectedConversation || isLoading.value) return
@@ -65,6 +93,10 @@ async function sendMessage() {
 
   const assistantMsgIndex = messages.value.length
   messages.value.push({ role: 'assistant', content: '', timestamp: new Date().toISOString() })
+
+  // 初始化打字机队列并启动打字动画
+  typewriterQueue = ''
+  startTypewriter(assistantMsgIndex)
 
   try {
     const userId = localStorage.getItem('agent_user_id') || ''
@@ -128,12 +160,11 @@ async function sendMessage() {
           } else {
             // 如果是当前事件的第一行 data，直接追加；若不是，说明原文本中此处是换行，追加前加 \n
             if (isFirstDataLineInEvent) {
-              messages.value[assistantMsgIndex].content += dataStr
+              typewriterQueue += dataStr
               isFirstDataLineInEvent = false
             } else {
-              messages.value[assistantMsgIndex].content += '\n' + dataStr
+              typewriterQueue += '\n' + dataStr
             }
-            scrollToBottom()
           }
         }
       }
@@ -149,11 +180,10 @@ async function sendMessage() {
         }
         if (dataStr !== '[DONE]' && !dataStr.startsWith('[CONV_ID]')) {
           if (isFirstDataLineInEvent) {
-            messages.value[assistantMsgIndex].content += dataStr
+            typewriterQueue += dataStr
           } else {
-            messages.value[assistantMsgIndex].content += '\n' + dataStr
+            typewriterQueue += '\n' + dataStr
           }
-          scrollToBottom()
         }
       }
     }
@@ -192,13 +222,35 @@ function renderMarkdown(content: string) {
   return md.render(content || '')
 }
 
+// ── 折叠面板状态管理 ──────────────────────────────────────────────
+const collapsedStates = ref<Record<string, boolean>>({})
+
+function isCollapsed(msgIdx: number, segIdx: number) {
+  return collapsedStates.value[`${msgIdx}-${segIdx}`] === true
+}
+
+function toggleCollapse(msgIdx: number, segIdx: number) {
+  const key = `${msgIdx}-${segIdx}`
+  collapsedStates.value[key] = !collapsedStates.value[key]
+}
+
 watch(() => props.selectedConversation?.id, async (newVal) => {
+  if (typewriterIntervalId) {
+    clearInterval(typewriterIntervalId)
+    typewriterIntervalId = null
+  }
   if (newVal) {
     await loadHistory(newVal)
   } else {
     messages.value = []
   }
 }, { immediate: true })
+
+onBeforeUnmount(() => {
+  if (typewriterIntervalId) {
+    clearInterval(typewriterIntervalId)
+  }
+})
 </script>
 
 <template>
@@ -242,7 +294,36 @@ watch(() => props.selectedConversation?.id, async (newVal) => {
               <span v-else>🤖</span>
             </div>
             <div class="bubble-wrap">
-              <div class="bubble markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <!-- 用户消息：直接渲染 Markdown -->
+              <div v-if="msg.role === 'user'" class="bubble markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              
+              <!-- 助手消息：解析流式推理与工具调用段落 -->
+              <div v-else class="bubble assistant-bubble-container">
+                <template v-for="(segment, segIdx) in parseMessageContent(msg.content)" :key="segIdx">
+                  <!-- 普通文本段落 -->
+                  <div v-if="segment.type === 'text'" class="bubble-text markdown-body" v-html="renderMarkdown(segment.content)"></div>
+                  
+                  <!-- 可折叠的推理/工具调用段落 -->
+                  <div v-else :class="['reasoning-container', segment.type]">
+                    <div class="reasoning-header" @click="toggleCollapse(idx, segIdx)">
+                      <span class="reasoning-title-wrap">
+                        <span class="reasoning-icon">
+                          <span v-if="segment.type === 'think'">🧠</span>
+                          <span v-else-if="segment.type === 'action'">🛠️</span>
+                          <span v-else-if="segment.type === 'observation'">👁️</span>
+                        </span>
+                        <span class="reasoning-title">{{ segment.title }}</span>
+                      </span>
+                      <span :class="['chevron-icon', { 'expanded': !isCollapsed(idx, segIdx) }]">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                          <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/>
+                        </svg>
+                      </span>
+                    </div>
+                    <div v-show="!isCollapsed(idx, segIdx)" class="reasoning-content markdown-body" v-html="renderMarkdown(segment.content)"></div>
+                  </div>
+                </template>
+              </div>
               <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
             </div>
           </div>
@@ -627,4 +708,112 @@ watch(() => props.selectedConversation?.id, async (newVal) => {
   transition: all 0.2s;
 }
 .btn-secondary:hover { border-color: #555; color: #fff; }
+
+/* ── 流式推理/工具调用折叠面板样式 ────────────────────────────────── */
+.assistant-bubble-container {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bubble-text {
+  color: #d1d1d1;
+}
+
+.reasoning-container {
+  margin: 4px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 🎨 思考、工具调用、工具返回专属配色风格与磨砂效果 */
+.reasoning-container.think {
+  border-left: 3px solid #8a2be2;
+  background: rgba(22, 19, 36, 0.8);
+  box-shadow: 0 4px 20px rgba(138, 43, 226, 0.05);
+}
+.reasoning-container.action {
+  border-left: 3px solid #ffa500;
+  background: rgba(36, 27, 19, 0.8);
+  box-shadow: 0 4px 20px rgba(255, 165, 0, 0.05);
+}
+.reasoning-container.observation {
+  border-left: 3px solid #00ced1;
+  background: rgba(19, 36, 36, 0.8);
+  box-shadow: 0 4px 20px rgba(0, 206, 209, 0.05);
+}
+
+/* 折叠面板头部 */
+.reasoning-header {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  transition: background 0.2s ease;
+}
+.reasoning-header:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.reasoning-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reasoning-icon {
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.reasoning-title {
+  font-weight: 600;
+  color: #e0e0e0;
+  letter-spacing: 0.5px;
+}
+
+/* 折叠箭头微动画 */
+.chevron-icon {
+  display: inline-flex;
+  align-items: center;
+  color: #777;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s;
+}
+.reasoning-header:hover .chevron-icon {
+  color: #bbb;
+}
+.chevron-icon.expanded {
+  transform: rotate(90deg);
+}
+
+/* 折叠内容区 */
+.reasoning-content {
+  padding: 12px 14px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+  line-height: 1.6;
+  color: #b0b0b0;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.reasoning-content.markdown-body :deep(p) {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #b0b0b0;
+  margin-bottom: 8px;
+}
+.reasoning-content.markdown-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+.reasoning-content.markdown-body :deep(pre.hljs) {
+  margin: 8px 0;
+  padding: 10px 12px;
+}
 </style>

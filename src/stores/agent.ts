@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { agentApi } from '@/api/agent'
 
 export const useAgentStore = defineStore('agent', () => {
-  const agents = ref([])
+  const agents = ref<any[]>([])
   const loading = ref(false)
   const error = ref('')
 
