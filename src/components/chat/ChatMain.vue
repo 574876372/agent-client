@@ -3,6 +3,14 @@ import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { chatApi } from '@/api/chat'
 import md from '@/utils/markdown'
 import { parseMessageContent } from '@/utils/parser'
+import {
+  appendToolResult,
+  createStreamBuffers,
+  mergeStreamContent,
+  parseSseEventLine,
+  type SseEventType,
+  type StreamBuffers
+} from '@/utils/sse'
 
 interface Agent {
   id: string
@@ -55,31 +63,66 @@ async function loadHistory(id: string) {
   }
 }
 
-// ── 打字机效果队列与核心逻辑 ──────────────────────────────────────
+// ── 流式缓冲、打字机（仅 message 事件）────────────────────────────────
 let typewriterQueue = ''
-let typewriterIntervalId: any = null
+let typewriterIntervalId: ReturnType<typeof setInterval> | null = null
+let streamBuffers: StreamBuffers = createStreamBuffers()
+
+function applyStreamContent(msgIdx: number) {
+  messages.value[msgIdx].content = mergeStreamContent(streamBuffers)
+}
 
 function startTypewriter(msgIdx: number) {
   if (typewriterIntervalId) {
     clearInterval(typewriterIntervalId)
   }
-  
+
   typewriterIntervalId = setInterval(() => {
     if (typewriterQueue.length > 0) {
-      // 动态控制速度：积压字符多时加速输入以减少长包延迟，空闲时丝滑打字
       const count = typewriterQueue.length > 30 ? 6 : typewriterQueue.length > 15 ? 3 : 1
       const chars = typewriterQueue.slice(0, count)
       typewriterQueue = typewriterQueue.slice(count)
-      
-      messages.value[msgIdx].content += chars
+      streamBuffers.message += chars
+      applyStreamContent(msgIdx)
       scrollToBottom()
-    } else {
-      if (!isLoading.value) {
-        clearInterval(typewriterIntervalId)
-        typewriterIntervalId = null
-      }
+    } else if (!isLoading.value) {
+      clearInterval(typewriterIntervalId!)
+      typewriterIntervalId = null
     }
-  }, 15) // 15ms 的高频微帧更新，流畅度极其卓越
+  }, 15)
+}
+
+function appendSseData(
+  msgIdx: number,
+  eventType: SseEventType,
+  dataStr: string,
+  isFirstLine: boolean
+) {
+  const piece = isFirstLine ? dataStr : '\n' + dataStr
+
+  if (eventType === 'reasoning') {
+    streamBuffers.reasoning += piece
+    applyStreamContent(msgIdx)
+    scrollToBottom()
+    return
+  }
+  if (eventType === 'tool_result') {
+    streamBuffers.tools = appendToolResult(streamBuffers.tools, dataStr)
+    applyStreamContent(msgIdx)
+    scrollToBottom()
+    return
+  }
+  if (eventType === 'error') {
+    streamBuffers.message += (streamBuffers.message ? '\n\n' : '') + `[错误] ${dataStr}`
+    applyStreamContent(msgIdx)
+    return
+  }
+  // message 或未知类型：走打字机
+  if (isFirstLine) {
+    typewriterQueue += dataStr
+  } else {
+    typewriterQueue += '\n' + dataStr
+  }
 }
 
 async function sendMessage() {
@@ -94,7 +137,7 @@ async function sendMessage() {
   const assistantMsgIndex = messages.value.length
   messages.value.push({ role: 'assistant', content: '', timestamp: new Date().toISOString() })
 
-  // 初始化打字机队列并启动打字动画
+  streamBuffers = createStreamBuffers()
   typewriterQueue = ''
   startTypewriter(assistantMsgIndex)
 
@@ -124,68 +167,67 @@ async function sendMessage() {
 
     const decoder = new TextDecoder('utf-8')
     let buffer = ''
-    // 状态标记：用来判断当前行是否是同一个 SSE 事件中的第一行 data
-    // 同一个 SSE 事件（以空行分隔）的多行 data 应以换行符 \n 拼接，从而保留原始文本的换行格式
+    let currentEvent: SseEventType = 'message'
     let isFirstDataLineInEvent = true
+    let streamDone = false
 
-    while (true) {
+    const processDataLine = (dataStr: string) => {
+      if (dataStr === '[DONE]') {
+        streamDone = true
+        return
+      }
+      if (dataStr.startsWith('[CONV_ID]')) {
+        console.log('当前流式会话 ID:', dataStr.slice(9))
+        return
+      }
+      appendSseData(assistantMsgIndex, currentEvent, dataStr, isFirstDataLineInEvent)
+      isFirstDataLineInEvent = false
+    }
+
+    const processLine = (line: string) => {
+      if (line === '') {
+        isFirstDataLineInEvent = true
+        return
+      }
+      const eventType = parseSseEventLine(line)
+      if (eventType !== null) {
+        currentEvent = eventType
+        isFirstDataLineInEvent = true
+        return
+      }
+      if (line.startsWith('data:')) {
+        let dataStr = line.slice(5)
+        if (dataStr.startsWith(' ')) {
+          dataStr = dataStr.slice(1)
+        }
+        processDataLine(dataStr)
+      }
+    }
+
+    outer: while (true) {
       const { done, value } = await reader.read()
       if (done) break
 
       buffer += decoder.decode(value, { stream: true })
       let lineEndIdx: number
       while ((lineEndIdx = buffer.indexOf('\n')) >= 0) {
-        // 仅移除尾部的回车符 \r，以兼容不同的操作系统和网络环境，保留其他关键的空白和换行结构
         const line = buffer.slice(0, lineEndIdx).replace(/\r$/, '')
         buffer = buffer.slice(lineEndIdx + 1)
-
-        // 空行代表当前事件（Event）结束，重置 data 行标记
-        if (line === '') {
-          isFirstDataLineInEvent = true
-          continue
-        }
-
-        if (line.startsWith('data:')) {
-          let dataStr = line.slice(5)
-          // 移除标准的 SSE "data: " 之后的第一个空格
-          if (dataStr.startsWith(' ')) {
-            dataStr = dataStr.slice(1)
-          }
-
-          if (dataStr === '[DONE]') {
-            break
-          } else if (dataStr.startsWith('[CONV_ID]')) {
-            const convId = dataStr.slice(9)
-            console.log('当前流式会话 ID:', convId)
-          } else {
-            // 如果是当前事件的第一行 data，直接追加；若不是，说明原文本中此处是换行，追加前加 \n
-            if (isFirstDataLineInEvent) {
-              typewriterQueue += dataStr
-              isFirstDataLineInEvent = false
-            } else {
-              typewriterQueue += '\n' + dataStr
-            }
-          }
-        }
+        processLine(line)
+        if (streamDone) break outer
       }
     }
 
-    // 处理流读取完毕后，缓冲区可能剩余的最后一行数据
     const remainingLine = buffer.replace(/\r$/, '')
-    if (remainingLine) {
-      if (remainingLine.startsWith('data:')) {
-        let dataStr = remainingLine.slice(5)
-        if (dataStr.startsWith(' ')) {
-          dataStr = dataStr.slice(1)
-        }
-        if (dataStr !== '[DONE]' && !dataStr.startsWith('[CONV_ID]')) {
-          if (isFirstDataLineInEvent) {
-            typewriterQueue += dataStr
-          } else {
-            typewriterQueue += '\n' + dataStr
-          }
-        }
-      }
+    if (remainingLine && !streamDone) {
+      processLine(remainingLine)
+    }
+
+    // 排空打字机队列中剩余的 message 内容
+    if (typewriterQueue.length > 0) {
+      streamBuffers.message += typewriterQueue
+      typewriterQueue = ''
+      applyStreamContent(assistantMsgIndex)
     }
 
   } catch (e) {
@@ -225,7 +267,20 @@ function renderMarkdown(content: string) {
 // ── 折叠面板状态管理 ──────────────────────────────────────────────
 const collapsedStates = ref<Record<string, boolean>>({})
 
+function shouldShowMessage(msg: Message, idx: number) {
+  if (msg.role === 'user') {
+    return !!msg.content?.trim()
+  }
+  return msg.content.length > 0 || (isLoading.value && idx === messages.value.length - 1)
+}
+
 function isCollapsed(msgIdx: number, segIdx: number) {
+  if (isLoading.value && msgIdx === messages.value.length - 1) {
+    const segments = parseMessageContent(messages.value[msgIdx]?.content ?? '')
+    if (segments[segIdx]?.type === 'think') {
+      return false
+    }
+  }
   return collapsedStates.value[`${msgIdx}-${segIdx}`] === true
 }
 
@@ -288,7 +343,7 @@ onBeforeUnmount(() => {
         </div>
 
         <template v-for="(msg, idx) in messages" :key="idx">
-          <div v-if="msg?.content?.trim()" :class="['message-row', msg.role]">
+          <div v-if="shouldShowMessage(msg, idx)" :class="['message-row', msg.role]">
             <div class="avatar">
               <span v-if="msg.role === 'user'">👤</span>
               <span v-else>🤖</span>
