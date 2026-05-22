@@ -17,17 +17,25 @@
 ```
 src/
 ├── api/           # API 接口层
-│   └── agent.ts   # Agent 相关 API
+│   ├── chat.ts    # Chat/Agent 接口服务
+│   └── request.ts # Axios 请求配置与拦截器
 ├── assets/        # 静态资源
 │   ├── logo.svg
 │   └── main.css
-├── components/    # 组件
-│   └── TheWelcome.vue
+├── components/    # 业务功能组件目录
+│   ├── auth/      # 认证/登录模块
+│   │   └── LoginModal.vue
+│   ├── agent/     # 智能体创作模块
+│   │   └── CreateAgentModal.vue
+│   └── chat/      # 聊天与对话列表模块
+│       ├── AppSidebar.vue
+│       ├── ChatMain.vue
+│       └── NewChatModal.vue
 ├── router/        # 路由配置
 │   └── index.ts
 ├── stores/        # 状态管理
 │   ├── counter.ts
-│   └── agent.ts   # Agent 状态管理
+│   └── agent.ts
 ├── views/         # 页面组件
 │   ├── HomeView.vue
 │   └── AboutView.vue
