@@ -50,6 +50,9 @@ const isLoading = ref(false)
 const inputText = ref('')
 const messagesEndRef = ref<HTMLElement | null>(null)
 
+/** 当前正在调用的工具名称（空字符串表示未在调用） */
+const toolCallingName = ref('')
+
 async function loadHistory(id: string) {
   if (!id || id === 'undefined') return
   try {
@@ -101,23 +104,35 @@ function appendSseData(
   const piece = isFirstLine ? dataStr : '\n' + dataStr
 
   if (eventType === 'reasoning') {
+    toolCallingName.value = ''
     streamBuffers.reasoning += piece
     applyStreamContent(msgIdx)
     scrollToBottom()
     return
   }
   if (eventType === 'tool_result') {
+    // 从 JSON 中提取工具名称，显示"正在调用工具 [xxx]..."状态
+    try {
+      const parsed = JSON.parse(dataStr) as { tool?: string }
+      toolCallingName.value = parsed.tool || '工具'
+    } catch {
+      toolCallingName.value = '工具'
+    }
     streamBuffers.tools = appendToolResult(streamBuffers.tools, dataStr)
     applyStreamContent(msgIdx)
     scrollToBottom()
+    // 短暂延迟后清除调用状态，让用户看到结果过渡
+    setTimeout(() => { toolCallingName.value = '' }, 800)
     return
   }
   if (eventType === 'error') {
+    toolCallingName.value = ''
     streamBuffers.message += (streamBuffers.message ? '\n\n' : '') + `[错误] ${dataStr}`
     applyStreamContent(msgIdx)
     return
   }
   // message 或未知类型：走打字机
+  toolCallingName.value = ''
   if (isFirstLine) {
     typewriterQueue += dataStr
   } else {
@@ -384,8 +399,20 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
+        <!-- Tool calling indicator -->
+        <div v-if="toolCallingName" class="message-row assistant">
+          <div class="avatar"><span>🤖</span></div>
+          <div class="bubble-wrap">
+            <div class="bubble tool-calling-bubble">
+              <span class="tool-calling-icon">🛠️</span>
+              <span class="tool-calling-text">正在调用工具 <strong>{{ toolCallingName }}</strong> ...</span>
+              <span class="tool-calling-spinner"></span>
+            </div>
+          </div>
+        </div>
+
         <!-- Loading indicator -->
-        <div v-if="isLoading" class="message-row assistant">
+        <div v-if="isLoading && !toolCallingName" class="message-row assistant">
           <div class="avatar"><span>🤖</span></div>
           <div class="bubble-wrap">
             <div class="bubble loading-bubble">
@@ -870,5 +897,42 @@ onBeforeUnmount(() => {
 .reasoning-content.markdown-body :deep(pre.hljs) {
   margin: 8px 0;
   padding: 10px 12px;
+}
+
+/* ── 工具调用实时反馈气泡 ────────────────────────────────── */
+.tool-calling-bubble {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: linear-gradient(135deg, rgba(36, 27, 19, 0.9), rgba(28, 22, 15, 0.9));
+  border: 1px solid rgba(255, 165, 0, 0.2);
+  border-left: 3px solid #ffa500;
+  animation: tool-calling-pulse 2s ease-in-out infinite;
+}
+@keyframes tool-calling-pulse {
+  0%, 100% { border-color: rgba(255, 165, 0, 0.3); }
+  50% { border-color: rgba(255, 165, 0, 0.6); }
+}
+.tool-calling-icon {
+  font-size: 16px;
+}
+.tool-calling-text {
+  font-size: 13px;
+  color: #e0c080;
+}
+.tool-calling-text strong {
+  color: #ffb84d;
+}
+.tool-calling-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 165, 0, 0.2);
+  border-top-color: #ffa500;
+  border-radius: 50%;
+  animation: tool-spin 0.8s linear infinite;
+}
+@keyframes tool-spin {
+  to { transform: rotate(360deg); }
 }
 </style>

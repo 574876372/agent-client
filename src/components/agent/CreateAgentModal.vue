@@ -11,13 +11,24 @@ const emit = defineEmits<{
   (e: 'agent-created'): void
 }>()
 
+interface ToolInfo {
+  toolName: string
+  displayName: string
+  description: string
+  icon: string
+  category: string
+  enabled: boolean
+}
+
 const modelProviders = ref<{ type: string; models: string[] }[]>([])
+const availableTools = ref<ToolInfo[]>([])
 const newAgent = reactive({
   name: '',
   description: '',
   modelType: '',
   modelName: '',
-  systemPrompt: ''
+  systemPrompt: '',
+  toolNames: [] as string[]
 })
 
 const promptTemplates = [
@@ -35,7 +46,7 @@ const availableModels = computed(() => {
 })
 
 function update(field: keyof typeof newAgent, value: string) {
-  newAgent[field] = value
+  ;(newAgent as any)[field] = value
 }
 
 function applyTemplate(prompt: string) {
@@ -46,6 +57,19 @@ function onModelTypeChange(type: string) {
   const provider = modelProviders.value.find(p => p.type === type)
   newAgent.modelType = type
   newAgent.modelName = provider?.models[0] || ''
+}
+
+function toggleTool(toolName: string) {
+  const idx = newAgent.toolNames.indexOf(toolName)
+  if (idx >= 0) {
+    newAgent.toolNames.splice(idx, 1)
+  } else {
+    newAgent.toolNames.push(toolName)
+  }
+}
+
+function isToolSelected(toolName: string): boolean {
+  return newAgent.toolNames.includes(toolName)
 }
 
 async function loadModelProviders() {
@@ -61,6 +85,17 @@ async function loadModelProviders() {
   }
 }
 
+async function loadAvailableTools() {
+  try {
+    const res = await agentApi.getTools()
+    availableTools.value = res.data || []
+    // 默认全选所有可用工具
+    newAgent.toolNames = availableTools.value.map(t => t.toolName)
+  } catch (e) {
+    console.error('加载工具列表失败:', e)
+  }
+}
+
 async function createAgent() {
   if (!newAgent.name.trim()) return
   try {
@@ -69,16 +104,19 @@ async function createAgent() {
       description: newAgent.description,
       modelType: newAgent.modelType,
       modelName: newAgent.modelName,
-      systemPrompt: newAgent.systemPrompt
+      systemPrompt: newAgent.systemPrompt,
+      toolNames: newAgent.toolNames
     })
     emit('agent-created')
     emit('update:show', false)
+    // 重置表单
     Object.assign(newAgent, {
       name: '',
       description: '',
       modelType: modelProviders.value[0]?.type || '',
       modelName: modelProviders.value[0]?.models[0] || '',
-      systemPrompt: ''
+      systemPrompt: '',
+      toolNames: availableTools.value.map(t => t.toolName)
     })
   } catch (e) {
     console.error(e)
@@ -87,6 +125,7 @@ async function createAgent() {
 
 onMounted(() => {
   loadModelProviders()
+  loadAvailableTools()
 })
 </script>
 
@@ -143,6 +182,35 @@ onMounted(() => {
             rows="4"
           ></textarea>
         </div>
+
+        <!-- 工具选择区域 -->
+        <div class="form-group" v-if="availableTools.length > 0">
+          <label>🛠️ 工具选择</label>
+          <p class="tool-hint">为此 Agent 分配可调用的工具能力</p>
+          <div class="tool-grid">
+            <div
+              v-for="tool in availableTools"
+              :key="tool.toolName"
+              :class="['tool-card', { selected: isToolSelected(tool.toolName) }]"
+              @click="toggleTool(tool.toolName)"
+            >
+              <div class="tool-card-header">
+                <span class="tool-icon">{{ tool.icon }}</span>
+                <span class="tool-check">
+                  <svg v-if="isToolSelected(tool.toolName)" viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/>
+                  </svg>
+                  <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="currentColor" opacity="0.3">
+                    <path d="M19 5v14H5V5h14m0-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/>
+                  </svg>
+                </span>
+              </div>
+              <div class="tool-card-name">{{ tool.displayName }}</div>
+              <div class="tool-card-id">{{ tool.toolName }}</div>
+              <div class="tool-card-desc">{{ tool.description }}</div>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn-secondary" @click="emit('update:show', false)">取消</button>
@@ -171,7 +239,7 @@ onMounted(() => {
   background: #1a1a1a;
   border: 1px solid #2a2a2a;
   border-radius: 16px;
-  width: 480px;
+  width: 540px;
   max-width: 95vw;
   max-height: 90vh;
   display: flex;
@@ -244,6 +312,74 @@ onMounted(() => {
   transition: all 0.2s;
 }
 .tag:hover { border-color: #4d6bfe; color: #4d6bfe; background: #1a1a2e; }
+
+/* ── 工具选择区域 ────────────────────────────────────── */
+.tool-hint {
+  font-size: 12px;
+  color: #555;
+  margin: 0;
+}
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+.tool-card {
+  background: #111;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  padding: 12px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tool-card:hover {
+  border-color: #444;
+  background: #161616;
+  transform: translateY(-1px);
+}
+.tool-card.selected {
+  border-color: #4d6bfe;
+  background: rgba(77, 107, 254, 0.08);
+  box-shadow: 0 0 0 1px rgba(77, 107, 254, 0.15), 0 4px 16px rgba(77, 107, 254, 0.08);
+}
+.tool-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tool-icon {
+  font-size: 22px;
+}
+.tool-check {
+  color: #4d6bfe;
+  display: flex;
+  align-items: center;
+}
+.tool-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e0e0;
+  margin-top: 2px;
+}
+.tool-card-id {
+  font-size: 11px;
+  color: #555;
+  font-family: 'Fira Code', monospace;
+}
+.tool-card-desc {
+  font-size: 11px;
+  color: #777;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .btn-primary {
   padding: 9px 20px;
   background: #4d6bfe;

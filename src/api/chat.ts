@@ -5,9 +5,11 @@ export const agentApi = {
   getAgents: () => api.get('/agents'),
   getAgent: (id: string) => api.get(`/agents/${id}`),
   createAgent: (data: any) => api.post('/agents', data),
+  updateAgent: (id: string, data: any) => api.put(`/agents/${id}`, data),
   deleteAgent: (id: string) => api.delete(`/agents/${id}`),
   chat: (id: string, data: any) => api.post(`/agents/${id}/chat`, data),
-  getModelProviders: () => api.get('/agents/models')
+  getModelProviders: () => api.get('/agents/models'),
+  getTools: () => api.get('/tools')
 }
 
 export const chatApi = {
