@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, watch, nextTick, onBeforeUnmount, computed } from 'vue'
 import { chatApi } from '@/api/chat'
 import md from '@/utils/markdown'
 import { parseMessageContent } from '@/utils/parser'
@@ -18,6 +18,8 @@ interface Agent {
   description: string
   model: string
   systemPrompt: string
+  memoryMode?: 'FULL' | 'WINDOW' | 'SUMMARY'
+  maxTurns?: number | null
 }
 
 interface Message {
@@ -52,6 +54,43 @@ const messagesEndRef = ref<HTMLElement | null>(null)
 
 /** 当前正在调用的工具名称（空字符串表示未在调用） */
 const toolCallingName = ref('')
+
+/** 记忆压缩进行中（触发时短暂显示压缩动效 badge） */
+const isCompressing = ref(false)
+
+/** 计算当前对话轮数（user + assistant 配对） */
+const currentTurns = computed(() => Math.floor(messages.value.length / 2))
+
+/** 记忆 badge 状态：模式图标 */
+const memoryModeIcon = computed(() => {
+  const mode = props.selectedAgent?.memoryMode || 'SUMMARY'
+  if (mode === 'FULL') return '📜'
+  if (mode === 'WINDOW') return '🪟'
+  return '✨'
+})
+
+/** 记忆 badge 文字描述 */
+const memoryBadgeText = computed(() => {
+  const agent = props.selectedAgent
+  if (!agent) return ''
+  const mode = agent.memoryMode || 'SUMMARY'
+  if (isCompressing.value) return '⚡ 正在压缩历史...'
+  if (mode === 'FULL') {
+    const count = messages.value.length
+    if (count >= 50) return `⚠️ 已有 ${count} 条消息，注意 Token 用量`
+    return `共 ${count} 条历史消息`
+  }
+  const maxTurns = agent.maxTurns ?? 10
+  return `第 ${currentTurns.value} 轮 / 上限 ${maxTurns} 轮`
+})
+
+/** 记忆 badge 是否为警告状态（橙色） */
+const memoryBadgeWarn = computed(() => {
+  const agent = props.selectedAgent
+  if (!agent) return false
+  const mode = agent.memoryMode || 'SUMMARY'
+  return mode === 'FULL' && messages.value.length >= 50
+})
 
 async function loadHistory(id: string) {
   if (!id || id === 'undefined') return
@@ -186,19 +225,6 @@ async function sendMessage() {
     let isFirstDataLineInEvent = true
     let streamDone = false
 
-    const processDataLine = (dataStr: string) => {
-      if (dataStr === '[DONE]') {
-        streamDone = true
-        return
-      }
-      if (dataStr.startsWith('[CONV_ID]')) {
-        console.log('当前流式会话 ID:', dataStr.slice(9))
-        return
-      }
-      appendSseData(assistantMsgIndex, currentEvent, dataStr, isFirstDataLineInEvent)
-      isFirstDataLineInEvent = false
-    }
-
     const processLine = (line: string) => {
       if (line === '') {
         isFirstDataLineInEvent = true
@@ -210,14 +236,26 @@ async function sendMessage() {
         isFirstDataLineInEvent = true
         return
       }
-      if (line.startsWith('data:')) {
-        let dataStr = line.slice(5)
-        if (dataStr.startsWith(' ')) {
-          dataStr = dataStr.slice(1)
-        }
-        processDataLine(dataStr)
+      if (!line.startsWith('data:')) return
+      const dataStr = line.slice(5).trimStart()
+      if (dataStr === '[DONE]') {
+        streamDone = true
+        return
       }
+      if (dataStr.startsWith('[CONV_ID]')) {
+        console.log('当前流式会话 ID:', dataStr.slice(9))
+        return
+      }
+      // 检测摘要压缩完成事件，触发 badge 脉冲动效
+      if (dataStr === 'memory_compressed') {
+        isCompressing.value = true
+        setTimeout(() => { isCompressing.value = false }, 2500)
+        return
+      }
+      appendSseData(assistantMsgIndex, currentEvent, dataStr, isFirstDataLineInEvent)
+      isFirstDataLineInEvent = false
     }
+
 
     outer: while (true) {
       const { done, value } = await reader.read()
@@ -348,6 +386,14 @@ onBeforeUnmount(() => {
             <div class="chat-header-title">{{ selectedConversation.title }}</div>
             <div class="chat-header-agent" v-if="selectedAgent">{{ selectedAgent.name }} · {{ selectedAgent.model }}</div>
           </div>
+        </div>
+        <!-- 记忆状态 Badge -->
+        <div
+          v-if="selectedAgent && memoryBadgeText"
+          :class="['memory-badge', { warn: memoryBadgeWarn, compressing: isCompressing }]"
+        >
+          <span class="memory-badge-icon">{{ memoryModeIcon }}</span>
+          <span class="memory-badge-text">{{ memoryBadgeText }}</span>
         </div>
       </div>
 
@@ -487,6 +533,36 @@ onBeforeUnmount(() => {
 .chat-header-icon { font-size: 20px; }
 .chat-header-title { font-size: 15px; font-weight: 600; color: #fff; }
 .chat-header-agent { font-size: 12px; color: #555; margin-top: 2px; }
+
+/* Memory status badge */
+.memory-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: rgba(77, 107, 254, 0.08);
+  border: 1px solid rgba(77, 107, 254, 0.2);
+  border-radius: 20px;
+  font-size: 12px;
+  color: #7a8fff;
+  transition: all 0.3s ease;
+  white-space: nowrap;
+}
+.memory-badge.warn {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.25);
+  color: #f59e0b;
+}
+.memory-badge.compressing {
+  animation: memoryPulse 1s ease-in-out infinite;
+}
+@keyframes memoryPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.memory-badge-icon { font-size: 14px; }
+.memory-badge-text { font-size: 11px; font-weight: 500; }
+
 
 /* Messages */
 .messages-area {
