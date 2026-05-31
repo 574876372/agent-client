@@ -71,6 +71,19 @@ const availableModels = computed(() => {
   return provider ? provider.models : []
 })
 
+/** SQL Agent 三件套工具名，用于前端分组展示 */
+const SQL_TOOL_NAMES = new Set(['list_datasources', 'get_table_schema', 'query_database'])
+
+/** 按 category=sql 或工具名归入「数据库问答能力」分组 */
+const sqlTools = computed(() =>
+  availableTools.value.filter(t => t.category === 'sql' || SQL_TOOL_NAMES.has(t.toolName))
+)
+
+/** 其余工具（builtin / custom） */
+const otherTools = computed(() =>
+  availableTools.value.filter(t => !sqlTools.value.includes(t))
+)
+
 function update(field: keyof typeof newAgent, value: string) {
   ;(newAgent as any)[field] = value
 }
@@ -343,26 +356,57 @@ onMounted(() => {
           <div class="form-section border-none" v-if="availableTools.length > 0">
             <div class="section-title">插件工具库</div>
             <p class="tool-hint">为 Agent 注入外接组件功能，使其拥有执行计算、信息查询、网络搜索等主动技能。</p>
-            <div class="tool-grid">
-              <div
-                v-for="tool in availableTools"
-                :key="tool.toolName"
-                :class="['tool-card', { selected: isToolSelected(tool.toolName) }]"
-                @click="toggleTool(tool.toolName)"
-              >
-                <div class="tool-card-header">
-                  <span class="tool-icon">{{ tool.icon }}</span>
-                  <div :class="['custom-checkbox', { checked: isToolSelected(tool.toolName) }]">
-                    <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
-                      <polyline points="20 6 9 17 4 12"></polyline>
-                    </svg>
+
+            <!-- 数据库问答能力（SQL Agent 三件套） -->
+            <template v-if="sqlTools.length > 0">
+              <div class="tool-group-title">🗄️ 数据库问答能力</div>
+              <p class="tool-group-hint">需先在「数据源管理」注册业务库；查询 SQL 会进入人工审批，不会直接执行。</p>
+              <div class="tool-grid">
+                <div
+                  v-for="tool in sqlTools"
+                  :key="tool.toolName"
+                  :class="['tool-card', 'tool-card-sql', { selected: isToolSelected(tool.toolName) }]"
+                  @click="toggleTool(tool.toolName)"
+                >
+                  <div class="tool-card-header">
+                    <span class="tool-icon">{{ tool.icon }}</span>
+                    <div :class="['custom-checkbox', { checked: isToolSelected(tool.toolName) }]">
+                      <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                      </svg>
+                    </div>
                   </div>
+                  <div class="tool-card-name">{{ tool.displayName }}</div>
+                  <div class="tool-card-id">{{ tool.toolName }}</div>
+                  <div class="tool-card-desc">{{ tool.description }}</div>
                 </div>
-                <div class="tool-card-name">{{ tool.displayName }}</div>
-                <div class="tool-card-id">{{ tool.toolName }}</div>
-                <div class="tool-card-desc">{{ tool.description }}</div>
               </div>
-            </div>
+            </template>
+
+            <!-- 通用内置 / 自定义工具 -->
+            <template v-if="otherTools.length > 0">
+              <div class="tool-group-title" :class="{ 'mt-group': sqlTools.length > 0 }">🔌 通用工具</div>
+              <div class="tool-grid">
+                <div
+                  v-for="tool in otherTools"
+                  :key="tool.toolName"
+                  :class="['tool-card', { selected: isToolSelected(tool.toolName) }]"
+                  @click="toggleTool(tool.toolName)"
+                >
+                  <div class="tool-card-header">
+                    <span class="tool-icon">{{ tool.icon }}</span>
+                    <div :class="['custom-checkbox', { checked: isToolSelected(tool.toolName) }]">
+                      <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="3">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                      </svg>
+                    </div>
+                  </div>
+                  <div class="tool-card-name">{{ tool.displayName }}</div>
+                  <div class="tool-card-id">{{ tool.toolName }}</div>
+                  <div class="tool-card-desc">{{ tool.description }}</div>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -907,6 +951,22 @@ onMounted(() => {
   line-height: 1.5;
 }
 
+.tool-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #d4d4d8;
+  margin: 8px 0 4px;
+}
+.tool-group-title.mt-group {
+  margin-top: 18px;
+}
+.tool-group-hint {
+  font-size: 12px;
+  color: #71717a;
+  margin: 0 0 8px;
+  line-height: 1.45;
+}
+
 .tool-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
@@ -936,6 +996,12 @@ onMounted(() => {
   border-color: #6366f1;
   background: linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(79, 70, 229, 0.04) 100%);
   box-shadow: 0 8px 24px rgba(99, 102, 241, 0.08), 0 0 0 1px rgba(99, 102, 241, 0.15) inset;
+}
+
+.tool-card-sql.selected {
+  border-color: #22c55e;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.08) 0%, rgba(22, 163, 74, 0.04) 100%);
+  box-shadow: 0 8px 24px rgba(34, 197, 94, 0.08), 0 0 0 1px rgba(34, 197, 94, 0.15) inset;
 }
 
 .tool-card-header {

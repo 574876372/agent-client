@@ -11,6 +11,8 @@ import {
   type SseEventType,
   type StreamBuffers
 } from '@/utils/sse'
+import SqlApprovalCard from './SqlApprovalCard.vue'
+import SqlResultTable from './SqlResultTable.vue'
 
 interface Agent {
   id: string
@@ -98,11 +100,164 @@ async function loadHistory(id: string) {
     const res = await chatApi.getHistory(id)
     const data = res.data
     messages.value = Array.isArray(data) ? data : (data?.body || [])
+    syncConsumedTokensFromHistory()
     scrollToBottom()
   } catch (e) {
     console.error('加载历史记录失败:', e)
     messages.value = []
   }
+}
+
+// ── SQL Agent payload 识别 + token 状态 ───────────────────────────────
+type SqlPendingPayload = {
+  status: 'PENDING_APPROVAL'
+  datasourceId?: string
+  sql: string
+  token: string
+  estimatedRows?: number
+  warnings?: string[]
+  rowLimit?: number
+}
+type SqlExecutionPayload = {
+  status: 'EXECUTED' | 'REJECTED' | 'TOKEN_EXPIRED' | 'ERROR'
+  sql?: string
+  datasourceId?: string
+  columns: string[]
+  rows: unknown[][]
+  rowCount: number
+  elapsedMs: number
+  truncated?: boolean
+  message?: string
+  error?: string
+}
+
+/** 已被处理过的 token（点击过执行/编辑/取消，或属于历史消息） */
+const consumedTokens = ref<Set<string>>(new Set())
+
+function parseSqlPayload(content: string):
+  | { kind: 'pending'; data: SqlPendingPayload }
+  | { kind: 'execution'; data: SqlExecutionPayload }
+  | null {
+  const trimmed = (content ?? '').trim()
+  
+  const extractFromValue = (val: any):
+    | { kind: 'pending'; data: SqlPendingPayload }
+    | { kind: 'execution'; data: SqlExecutionPayload }
+    | null => {
+    if (!val) return null
+    
+    let target = val
+    if (Array.isArray(val)) {
+      target = val.find(item => item && (item.status === 'PENDING_APPROVAL' || item.status === 'EXECUTED' || item.status === 'REJECTED' || item.status === 'TOKEN_EXPIRED' || item.status === 'ERROR')) || val[0]
+    }
+    
+    if (target?.status === 'PENDING_APPROVAL' && typeof target.sql === 'string') {
+      const token = target.token ?? target.confirmToken
+      if (typeof token === 'string') {
+        return {
+          kind: 'pending',
+          data: { ...target, token } as SqlPendingPayload
+        }
+      }
+    }
+    if (
+      target?.status === 'EXECUTED' ||
+      target?.status === 'REJECTED' ||
+      target?.status === 'TOKEN_EXPIRED' ||
+      target?.status === 'ERROR'
+    ) {
+      return {
+        kind: 'execution',
+        data: {
+          columns: [],
+          rows: [],
+          ...target
+        } as SqlExecutionPayload
+      }
+    }
+    return null
+  }
+
+  // 1. 尝试直接解析完整内容
+  try {
+    const json = JSON.parse(trimmed)
+    const res = extractFromValue(json)
+    if (res) return res
+  } catch {
+    // 忽略，继续后面步骤
+  }
+
+  // 2. 逐行寻找以 { 或 [ 开头并以 } 或 ] 结尾的行进行解析
+  const lines = trimmed.split('\n')
+  for (const line of lines) {
+    const trimmedLine = line.trim()
+    if (
+      (trimmedLine.startsWith('{') && trimmedLine.endsWith('}')) ||
+      (trimmedLine.startsWith('[') && trimmedLine.endsWith(']'))
+    ) {
+      try {
+        const json = JSON.parse(trimmedLine)
+        const res = extractFromValue(json)
+        if (res) return res
+      } catch {
+        // 静默忽略，继续检查下一行
+      }
+    }
+  }
+
+  // 3. 特殊容错：如果 trimmed 包含 JSON 子串，可以使用匹配法提取
+  try {
+    const jsonStartIdx = trimmed.indexOf('{')
+    const arrayStartIdx = trimmed.indexOf('[')
+    let startIdx = -1
+    let endChar = ''
+    if (jsonStartIdx !== -1 && (arrayStartIdx === -1 || jsonStartIdx < arrayStartIdx)) {
+      startIdx = jsonStartIdx
+      endChar = '}'
+    } else if (arrayStartIdx !== -1) {
+      startIdx = arrayStartIdx
+      endChar = ']'
+    }
+
+    if (startIdx !== -1) {
+      const endIdx = trimmed.lastIndexOf(endChar)
+      if (endIdx > startIdx) {
+        const potentialJson = trimmed.slice(startIdx, endIdx + 1)
+        try {
+          const json = JSON.parse(potentialJson)
+          const res = extractFromValue(json)
+          if (res) return res
+        } catch {
+          // 忽略
+        }
+      }
+    }
+  } catch {
+    // 忽略
+  }
+
+  return null
+}
+
+/**
+ * 历史消息中的 PENDING_APPROVAL 卡片视为已处理（避免对过往会话重复触发审批）。
+ * 只把"最后一条消息"中的 token 保留为未消费，让用户可以继续审批最新一张未操作的卡片。
+ */
+function syncConsumedTokensFromHistory() {
+  const next = new Set<string>()
+  const lastIdx = messages.value.length - 1
+  messages.value.forEach((msg, mi) => {
+    if (msg.role !== 'assistant') return
+    const segments = parseMessageContent(msg.content || '')
+    segments.forEach((seg) => {
+      if (seg.type !== 'observation') return
+      const parsed = parseSqlPayload(seg.content)
+      if (parsed?.kind === 'pending' && mi !== lastIdx) {
+        next.add(parsed.data.token)
+      }
+    })
+  })
+  consumedTokens.value = next
 }
 
 // ── 流式缓冲、打字机（仅 message 事件）────────────────────────────────
@@ -179,12 +334,12 @@ function appendSseData(
   }
 }
 
-async function sendMessage() {
-  const text = inputText.value.trim()
-  if (!text || !props.selectedConversation || isLoading.value) return
-
-  messages.value.push({ role: 'user', content: text, timestamp: new Date().toISOString() })
-  inputText.value = ''
+/**
+ * 通用流式调用：发送任意 SendMessageRequest 体，处理 SSE 帧并写回到 assistantMsgIndex 行。
+ * 普通对话与 SQL 审批确认都复用此入口。
+ */
+async function streamSend(payload: Record<string, unknown>) {
+  if (!props.selectedConversation) return
   isLoading.value = true
   scrollToBottom()
 
@@ -206,7 +361,7 @@ async function sendMessage() {
       },
       body: JSON.stringify({
         conversationId: props.selectedConversation.id,
-        content: text
+        ...payload
       })
     })
 
@@ -246,7 +401,6 @@ async function sendMessage() {
         console.log('当前流式会话 ID:', dataStr.slice(9))
         return
       }
-      // 检测摘要压缩完成事件，触发 badge 脉冲动效
       if (dataStr === 'memory_compressed') {
         isCompressing.value = true
         setTimeout(() => { isCompressing.value = false }, 2500)
@@ -276,7 +430,6 @@ async function sendMessage() {
       processLine(remainingLine)
     }
 
-    // 排空打字机队列中剩余的 message 内容
     if (typewriterQueue.length > 0) {
       streamBuffers.message += typewriterQueue
       typewriterQueue = ''
@@ -294,6 +447,31 @@ async function sendMessage() {
     isLoading.value = false
     scrollToBottom()
   }
+}
+
+async function sendMessage() {
+  const text = inputText.value.trim()
+  if (!text || !props.selectedConversation || isLoading.value) return
+
+  messages.value.push({ role: 'user', content: text, timestamp: new Date().toISOString() })
+  inputText.value = ''
+  await streamSend({ content: text })
+}
+
+/**
+ * SQL 审批动作的统一入口：将 token 标记为已消费后调用 streamSend，
+ * 后端 ChatBizImpl.sendMessageStream 检测 sqlAction != null 会短路到 SqlAgentBiz。
+ */
+async function handleSqlAction(token: string, action: 'APPROVE' | 'REJECT' | 'EDIT', editedSql?: string) {
+  if (!props.selectedConversation || isLoading.value) return
+  if (consumedTokens.value.has(token)) return
+  consumedTokens.value.add(token)
+  await streamSend({
+    content: '',
+    sqlAction: action,
+    confirmToken: token,
+    ...(action === 'EDIT' && editedSql ? { editedSql } : {})
+  })
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -418,8 +596,24 @@ onBeforeUnmount(() => {
                 <template v-for="(segment, segIdx) in parseMessageContent(msg.content)" :key="segIdx">
                   <!-- 普通文本段落 -->
                   <div v-if="segment.type === 'text'" class="bubble-text markdown-body" v-html="renderMarkdown(segment.content)"></div>
-                  
-                  <!-- 可折叠的推理/工具调用段落 -->
+
+                  <!-- SQL Agent: PENDING_APPROVAL 审批卡片 -->
+                  <template v-else-if="segment.type === 'observation' && parseSqlPayload(segment.content)?.kind === 'pending'">
+                    <SqlApprovalCard
+                      :payload="(parseSqlPayload(segment.content)!.data as SqlPendingPayload)"
+                      :consumed="consumedTokens.has((parseSqlPayload(segment.content)!.data as SqlPendingPayload).token)"
+                      @approve="(t) => handleSqlAction(t, 'APPROVE')"
+                      @reject="(t) => handleSqlAction(t, 'REJECT')"
+                      @edit="(t, s) => handleSqlAction(t, 'EDIT', s)"
+                    />
+                  </template>
+
+                  <!-- SQL Agent: 执行结果表格 -->
+                  <template v-else-if="segment.type === 'observation' && parseSqlPayload(segment.content)?.kind === 'execution'">
+                    <SqlResultTable :payload="(parseSqlPayload(segment.content)!.data as SqlExecutionPayload)" />
+                  </template>
+
+                  <!-- 可折叠的推理/工具调用段落（其它情况） -->
                   <div v-else :class="['reasoning-container', segment.type]">
                     <div class="reasoning-header" @click="toggleCollapse(idx, segIdx)">
                       <span class="reasoning-title-wrap">

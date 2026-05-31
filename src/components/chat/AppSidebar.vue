@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
 import { agentApi, chatApi } from '@/api/chat'
+
+const router = useRouter()
 
 interface Agent {
   id: string
@@ -109,6 +112,14 @@ async function deleteConversation(id: string) {
         </div>
         <button class="item-delete" @click.stop="deleteAgent(agent.id)" title="删除">✕</button>
       </div>
+    </div>
+
+    <!-- 数据源管理入口（仅登录可见） -->
+    <div v-if="isLoggedIn" class="sidebar-nav">
+      <button class="btn-nav-ds" @click="router.push('/datasources')">
+        <span class="item-icon">🗄️</span>
+        <span class="item-title">数据源管理</span>
+      </button>
     </div>
 
     <!-- User Card -->
@@ -312,4 +323,22 @@ async function deleteConversation(id: string) {
   transition: all 0.2s;
 }
 .btn-login-trigger:hover { background: #333; color: #fff; }
+
+/* 数据源管理入口 */
+.sidebar-nav { padding: 4px 8px 8px; }
+.btn-nav-ds {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: #ccc;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-nav-ds:hover { background: #1f1f1f; color: #fff; }
 </style>
