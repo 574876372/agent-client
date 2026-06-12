@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, onMounted } from 'vue'
-import { agentApi } from '@/api/chat'
+import { agentApi, knowledgeApi } from '@/api/chat'
 
 const props = defineProps<{
   show: boolean
@@ -22,6 +22,7 @@ interface ToolInfo {
 
 const modelProviders = ref<{ type: string; models: string[] }[]>([])
 const availableTools = ref<ToolInfo[]>([])
+const kbs = ref<{ id: string; name: string }[]>([])
 const newAgent = reactive({
   name: '',
   description: '',
@@ -32,7 +33,13 @@ const newAgent = reactive({
   memoryMode: 'SUMMARY' as 'FULL' | 'WINDOW' | 'SUMMARY',
   maxTurns: null as number | null,
   useCustomTurns: false,
-  customTurns: 10
+  customTurns: 10,
+  
+  // RAG configurations
+  kbIds: [] as string[],
+  ragMode: 'GENERIC' as 'DISABLED' | 'GENERIC' | 'AGENTIC',
+  recallLimit: 3,
+  scoreThreshold: 0.3
 })
 
 const promptTemplates = [
@@ -135,6 +142,15 @@ async function loadAvailableTools() {
   }
 }
 
+async function loadKnowledgeBases() {
+  try {
+    const res = await knowledgeApi.listKbs()
+    kbs.value = res.data ?? []
+  } catch (e) {
+    console.error('加载知识库列表失败:', e)
+  }
+}
+
 async function createAgent() {
   if (!newAgent.name.trim()) return
   try {
@@ -146,7 +162,13 @@ async function createAgent() {
       systemPrompt: newAgent.systemPrompt,
       toolNames: newAgent.toolNames,
       memoryMode: newAgent.memoryMode,
-      maxTurns: newAgent.memoryMode === 'FULL' ? null : (newAgent.useCustomTurns ? newAgent.customTurns : null)
+      maxTurns: newAgent.memoryMode === 'FULL' ? null : (newAgent.useCustomTurns ? newAgent.customTurns : null),
+      
+      // RAG properties
+      kbIds: newAgent.kbIds,
+      ragMode: newAgent.kbIds.length > 0 ? newAgent.ragMode : 'DISABLED',
+      recallLimit: newAgent.kbIds.length > 0 ? newAgent.recallLimit : null,
+      scoreThreshold: newAgent.kbIds.length > 0 ? newAgent.scoreThreshold : null
     })
     emit('agent-created')
     emit('update:show', false)
@@ -161,7 +183,11 @@ async function createAgent() {
       memoryMode: 'SUMMARY',
       maxTurns: null,
       useCustomTurns: false,
-      customTurns: 10
+      customTurns: 10,
+      kbIds: [],
+      ragMode: 'GENERIC',
+      recallLimit: 3,
+      scoreThreshold: 0.3
     })
   } catch (e) {
     console.error(e)
@@ -171,6 +197,7 @@ async function createAgent() {
 onMounted(() => {
   loadModelProviders()
   loadAvailableTools()
+  loadKnowledgeBases()
 })
 </script>
 
@@ -350,6 +377,68 @@ onMounted(() => {
                 </Transition>
               </div>
             </div>
+          </div>
+
+          <!-- 4.5 RAG 知识库配置 Section -->
+          <div class="form-section">
+            <div class="section-title">私有知识库 (RAG)</div>
+            <p class="tool-hint">引入特定领域的私有数据文档，提升 Agent 垂直回答的专业度与精准度。</p>
+            
+            <div class="form-group" style="margin-top: 4px;">
+              <label>关联私有知识库</label>
+              <div v-if="kbs.length === 0" class="empty-kbs-hint">
+                暂无可绑定的私有知识库，请先前往「<a href="/knowledge" target="_blank" style="color: #6366f1; text-decoration: none;">知识库管理</a>」页面创建并导入文档。
+              </div>
+              <div v-else class="kb-checkbox-grid">
+                <label v-for="kb in kbs" :key="kb.id" class="kb-checkbox-card" :class="{ selected: newAgent.kbIds.includes(kb.id) }">
+                  <input type="checkbox" :value="kb.id" v-model="newAgent.kbIds" style="display: none;" />
+                  <span class="kb-card-avatar">📚</span>
+                  <span class="kb-card-name">{{ kb.name }}</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Selected KB config parameters -->
+            <Transition name="slide-fade">
+              <div v-if="newAgent.kbIds.length > 0" class="rag-params-config">
+                <div class="form-row">
+                  <div class="form-group flex-1">
+                    <label>RAG 检索模式</label>
+                    <div class="select-wrapper">
+                      <select v-model="newAgent.ragMode" class="form-input">
+                        <option value="GENERIC">通用前置注入 (GENERIC - 推荐)</option>
+                        <option value="AGENTIC">智能体工具调用 (AGENTIC)</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                
+                <div class="form-row" style="margin-top: 12px;">
+                  <div class="form-group flex-1">
+                    <label>最大召回段落数 (Top-K)</label>
+                    <div class="turns-input-wrapper" style="width: 100%;">
+                      <input
+                        type="number"
+                        v-model.number="newAgent.recallLimit"
+                        min="1" max="10"
+                        class="form-input"
+                        style="text-align: left;"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div class="form-group flex-1">
+                    <label>最低得分过滤阈值 (0.0 ~ 1.0)</label>
+                    <input
+                      type="number"
+                      v-model.number="newAgent.scoreThreshold"
+                      step="0.05" min="0.0" max="1.0"
+                      class="form-input"
+                    />
+                  </div>
+                </div>
+              </div>
+            </Transition>
           </div>
 
           <!-- 5. 工具箱 Section -->
@@ -1122,6 +1211,73 @@ onMounted(() => {
   border-color: #3f3f46;
   color: #fff;
   background: #18181c;
+}
+
+/* ── RAG CSS Styles ────────────────────────────────────────── */
+.empty-kbs-hint {
+  font-size: 13px;
+  color: #71717a;
+  padding: 12px;
+  background: #0d0d0f;
+  border: 1px dashed #232329;
+  border-radius: 10px;
+  line-height: 1.5;
+}
+
+.kb-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.kb-checkbox-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #0d0d0f;
+  border: 1px solid #232329;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+
+.kb-checkbox-card:hover {
+  border-color: #3f3f46;
+  background: #141419;
+}
+
+.kb-checkbox-card.selected {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.06);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.04);
+}
+
+.kb-card-avatar {
+  font-size: 16px;
+}
+
+.kb-card-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #c4c4c6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kb-checkbox-card.selected .kb-card-name {
+  color: #fff;
+}
+
+.rag-params-config {
+  margin-top: 14px;
+  padding: 16px;
+  background: #0d0d0f;
+  border: 1px solid #232329;
+  border-radius: 12px;
 }
 </style>
 

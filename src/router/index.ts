@@ -21,6 +21,11 @@ const router = createRouter({
       path: '/datasources',
       name: 'datasources',
       component: () => import('../views/DatasourceView.vue')
+    },
+    {
+      path: '/knowledge',
+      name: 'knowledge',
+      component: () => import('../views/KnowledgeView.vue')
     }
   ]
 })

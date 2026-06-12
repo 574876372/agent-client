@@ -114,11 +114,15 @@ async function deleteConversation(id: string) {
       </div>
     </div>
 
-    <!-- 数据源管理入口（仅登录可见） -->
+    <!-- 数据源与知识库管理入口（仅登录可见） -->
     <div v-if="isLoggedIn" class="sidebar-nav">
-      <button class="btn-nav-ds" @click="router.push('/datasources')">
+      <button class="btn-nav-ds" @click="router.push('/datasources')" style="margin-bottom: 4px;">
         <span class="item-icon">🗄️</span>
         <span class="item-title">数据源管理</span>
+      </button>
+      <button class="btn-nav-ds" @click="router.push('/knowledge')">
+        <span class="item-icon">📚</span>
+        <span class="item-title">知识库管理</span>
       </button>
     </div>
 
