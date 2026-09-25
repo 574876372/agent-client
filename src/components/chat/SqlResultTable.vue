@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { Download, Table2 } from 'lucide-vue-next'
 
 /**
  * 后端 SqlExecutionResult JSON 结构（与 starter `executor/SqlExecutionResult.java` 对齐）。
@@ -77,22 +78,27 @@ function cellText(val: unknown): string {
 
 <template>
   <div class="sql-result">
-    <header class="sql-result-header">
-      <span class="result-icon">📊</span>
-      <span class="result-title">查询结果</span>
-      <span class="result-meta">{{ payload.rowCount }} 行 · {{ payload.elapsedMs }}ms</span>
-      <span v-if="payload.truncated" class="meta-pill truncated">已截断</span>
-      <span class="spacer" />
-      <button v-if="(payload.rows?.length ?? 0) > 0" class="btn-export" @click="exportCsv">导出 CSV</button>
+    <header class="result-head">
+      <span class="head-icon" aria-hidden="true"><Table2 :size="15" :stroke-width="1.75" /></span>
+      <span class="head-title">查询结果</span>
+      <span class="head-meta">{{ payload.rowCount }} 行 · {{ payload.elapsedMs }} ms</span>
+      <el-tag v-if="payload.truncated" size="small" type="warning" effect="plain">已截断</el-tag>
+      <span class="head-spacer" />
+      <el-button v-if="(payload.rows?.length ?? 0) > 0" size="small" @click="exportCsv">
+        <Download :size="14" :stroke-width="1.75" /><span>导出 CSV</span>
+      </el-button>
     </header>
 
-    <div v-if="payload.status !== 'EXECUTED'" :class="['result-banner', payload.status.toLowerCase()]">
-      {{ payload.message || payload.error || payload.status }}
+    <div v-if="payload.status !== 'EXECUTED'" class="result-banner">
+      <el-alert
+        :title="payload.message || payload.error || payload.status"
+        :type="payload.status === 'ERROR' ? 'error' : payload.status === 'TOKEN_EXPIRED' ? 'warning' : 'info'"
+        :closable="false"
+        show-icon
+      />
     </div>
 
-    <div v-else-if="(payload.rows?.length ?? 0) === 0" class="result-empty">
-      未返回任何数据
-    </div>
+    <div v-else-if="(payload.rows?.length ?? 0) === 0" class="result-empty">未返回任何数据</div>
 
     <div v-else class="result-table-wrap">
       <table class="result-table">
@@ -103,14 +109,14 @@ function cellText(val: unknown): string {
         </thead>
         <tbody>
           <tr v-for="(row, ri) in visibleRows" :key="ri">
-            <td v-for="(cell, ci) in row" :key="ci">{{ cellText(cell) }}</td>
+            <td v-for="(cell, ci) in row" :key="ci" :title="cellText(cell)">{{ cellText(cell) }}</td>
           </tr>
         </tbody>
       </table>
       <div v-if="hiddenCount > 0" class="result-fold">
-        <button class="btn-fold" @click="expanded = !expanded">
+        <el-button size="small" text type="primary" @click="expanded = !expanded">
           {{ expanded ? '收起' : `展开剩余 ${hiddenCount} 行` }}
-        </button>
+        </el-button>
       </div>
     </div>
   </div>
@@ -118,111 +124,93 @@ function cellText(val: unknown): string {
 
 <style scoped>
 .sql-result {
-  border: 1px solid #2a2a2a;
-  border-left: 3px solid #00ced1;
-  border-radius: 10px;
-  background: #141414;
-  padding: 10px 12px;
-  margin: 6px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--app-bg-surface);
+  overflow: hidden;
 }
 
-.sql-result-header {
+.result-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--app-border);
 }
-.result-icon { font-size: 16px; }
-.result-title { font-weight: 600; color: #e8e8e8; }
-.result-meta {
-  font-size: 11px;
-  color: #888;
-  background: #1f1f1f;
-  border-radius: 4px;
-  padding: 2px 8px;
+.head-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--app-radius-sm);
+  background: var(--app-success-soft);
+  color: var(--app-success);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.meta-pill.truncated {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: #4a2a1a;
-  color: #fbbf24;
+.head-title {
+  font-size: var(--app-font-size-base);
+  font-weight: 600;
 }
-.spacer { flex: 1; }
-
-.btn-export {
-  background: #1f1f1f;
-  border: 1px solid #2a2a2a;
-  color: #ccc;
-  border-radius: 6px;
-  padding: 4px 10px;
-  cursor: pointer;
-  font-size: 12px;
+.head-meta {
+  font-size: var(--app-font-size-xs);
+  color: var(--app-text-tertiary);
 }
-.btn-export:hover { background: #2a2a2a; color: #fff; }
+.head-spacer {
+  flex: 1;
+}
+.result-head :deep(.el-button > span) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 
 .result-banner {
-  padding: 10px 12px;
-  border-radius: 8px;
-  font-size: 13px;
+  padding: 12px 14px;
 }
-.result-banner.rejected { background: #2a2a2a; color: #ccc; }
-.result-banner.token_expired { background: #4a3a1a; color: #fbbf24; }
-.result-banner.error { background: #4a1d1d; color: #fca5a5; }
-
 .result-empty {
-  padding: 16px;
+  padding: 20px;
   text-align: center;
-  color: #666;
-  font-size: 13px;
+  font-size: var(--app-font-size-sm);
+  color: var(--app-text-tertiary);
 }
 
 .result-table-wrap {
   overflow-x: auto;
-  border: 1px solid #20262e;
-  border-radius: 8px;
-  background: #0d1117;
 }
 .result-table {
   width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 12.5px;
+  border-collapse: collapse;
+  font-size: var(--app-font-size-sm);
 }
 .result-table th {
-  background: #1c1c1c;
-  color: #fff;
-  font-weight: 600;
+  padding: 8px 14px;
   text-align: left;
-  padding: 8px 12px;
-  border-bottom: 1px solid #2a2a2a;
   white-space: nowrap;
+  font-size: var(--app-font-size-xs);
+  font-weight: 500;
+  color: var(--app-text-secondary);
+  background: var(--app-bg-subtle);
+  border-bottom: 1px solid var(--app-border);
 }
 .result-table td {
-  padding: 6px 12px;
-  border-bottom: 1px solid #1a1a1a;
-  color: #c0c0c0;
-  white-space: nowrap;
-  font-family: ui-monospace, monospace;
   max-width: 320px;
-  text-overflow: ellipsis;
+  padding: 7px 14px;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--app-font-mono);
+  color: var(--app-text-primary);
+  border-bottom: 1px solid var(--app-border);
 }
-.result-table tr:last-child td { border-bottom: none; }
-.result-table tr:hover td { background: #161616; }
-
-.result-fold { text-align: center; padding: 8px 0; }
-.btn-fold {
-  background: transparent;
-  border: 1px solid #2a2a2a;
-  color: #888;
-  border-radius: 6px;
-  padding: 4px 14px;
-  cursor: pointer;
-  font-size: 12px;
+.result-table tr:last-child td {
+  border-bottom: none;
 }
-.btn-fold:hover { color: #fff; border-color: #4d6bfe; }
+.result-table tbody tr:hover td {
+  background: var(--app-bg-subtle);
+}
+.result-fold {
+  padding: 6px 0;
+  text-align: center;
+  border-top: 1px solid var(--app-border);
+}
 </style>

@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { Bot, Check } from 'lucide-vue-next'
 import { chatApi } from '@/api/chat'
 
 interface Agent {
   id: string
   name: string
   description: string
-  model: string
+  model?: string
+  modelType?: string
+  modelName?: string
   systemPrompt: string
 }
 
@@ -29,9 +32,11 @@ const emit = defineEmits<{
 }>()
 
 const selectedAgentId = ref('')
+const creating = ref(false)
 
 async function startNewChat() {
   if (!selectedAgentId.value) return
+  creating.value = true
   try {
     const agent = props.agents.find(a => a.id === selectedAgentId.value)
     const res = await chatApi.createConversation({
@@ -43,151 +48,123 @@ async function startNewChat() {
     selectedAgentId.value = ''
   } catch (e) {
     console.error(e)
+  } finally {
+    creating.value = false
   }
+}
+
+function goCreateAgent() {
+  emit('update:show', false)
+  emit('goCreateAgent')
 }
 </script>
 
 <template>
-  <div v-if="show" class="modal-overlay" @click.self="emit('update:show', false)">
-    <div class="modal">
-      <div class="modal-header">
-        <h2>新建对话</h2>
-        <button class="modal-close" @click="emit('update:show', false)">✕</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label>选择 Agent <span class="required">*</span></label>
-          <div v-if="agents.length === 0" class="empty-hint" style="margin-top:8px">
-            还没有 Agent，请先
-            <a href="#" @click.prevent="emit('update:show', false); emit('goCreateAgent')">创建一个</a>
-          </div>
-          <div v-else class="agent-select-list">
-            <div
-              v-for="agent in agents"
-              :key="agent.id"
-              :class="['agent-select-item', selectedAgentId === agent.id && 'selected']"
-              @click="selectedAgentId = agent.id"
-            >
-              <span class="agent-select-icon">🧠</span>
-              <div>
-                <div class="agent-select-name">{{ agent.name }}</div>
-                <div class="agent-select-desc">{{ agent.description || agent.model }}</div>
-              </div>
-              <span v-if="selectedAgentId === agent.id" class="check">✓</span>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn-secondary" @click="emit('update:show', false)">取消</button>
-        <button class="btn-primary" :disabled="!selectedAgentId" @click="startNewChat">开始对话</button>
-      </div>
+  <el-dialog
+    :model-value="show"
+    title="新建对话"
+    width="480px"
+    align-center
+    @update:model-value="emit('update:show', $event)"
+  >
+    <div class="field-label">选择智能体</div>
+    <el-empty v-if="agents.length === 0" description="还没有智能体" :image-size="64">
+      <el-button type="primary" @click="goCreateAgent">创建智能体</el-button>
+    </el-empty>
+    <div v-else class="agent-list" role="radiogroup" aria-label="选择智能体">
+      <button
+        v-for="agent in agents"
+        :key="agent.id"
+        type="button"
+        role="radio"
+        :aria-checked="selectedAgentId === agent.id"
+        :class="['agent-option', { selected: selectedAgentId === agent.id }]"
+        @click="selectedAgentId = agent.id"
+      >
+        <span class="agent-avatar" aria-hidden="true"><Bot :size="16" :stroke-width="1.75" /></span>
+        <span class="agent-text">
+          <span class="agent-name">{{ agent.name }}</span>
+          <span class="agent-desc">{{ agent.description || agent.modelName || agent.model }}</span>
+        </span>
+        <Check v-if="selectedAgentId === agent.id" class="agent-check" :size="16" :stroke-width="2" />
+      </button>
     </div>
-  </div>
+    <template #footer>
+      <el-button @click="emit('update:show', false)">取消</el-button>
+      <el-button type="primary" :disabled="!selectedAgentId" :loading="creating" @click="startNewChat">开始对话</el-button>
+    </template>
+  </el-dialog>
 </template>
 
 <style scoped>
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  backdrop-filter: blur(4px);
+.field-label {
+  margin-bottom: 8px;
+  font-size: var(--app-font-size-sm);
+  font-weight: 500;
+  color: var(--app-text-regular);
 }
-.modal {
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
-  border-radius: 16px;
-  width: 480px;
-  max-width: 95vw;
-  max-height: 90vh;
+.agent-list {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-}
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 18px 20px;
-  border-bottom: 1px solid #252525;
-}
-.modal-header h2 { font-size: 16px; font-weight: 600; color: #fff; }
-.modal-close {
-  background: transparent;
-  border: none;
-  color: #666;
-  font-size: 16px;
-  cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 6px;
-}
-.modal-close:hover { color: #fff; background: #2a2a2a; }
-.modal-body {
-  padding: 20px;
+  gap: 8px;
+  max-height: 360px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
 }
-.modal-footer {
-  padding: 16px 20px;
-  border-top: 1px solid #252525;
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-}
-.form-group { display: flex; flex-direction: column; gap: 6px; }
-.form-group label { font-size: 13px; color: #aaa; font-weight: 500; }
-.required { color: #ff5555; }
-.empty-hint {
-  color: #555;
-  font-size: 13px;
-  line-height: 1.6;
-}
-.empty-hint a { color: #4d6bfe; text-decoration: none; }
-.agent-select-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-.agent-select-item {
+.agent-option {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid #252525;
-  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--app-bg-surface);
+  text-align: left;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: border-color 0.15s, background 0.15s;
 }
-.agent-select-item:hover { border-color: #4d6bfe; background: #151525; }
-.agent-select-item.selected { border-color: #4d6bfe; background: #151525; }
-.agent-select-icon { font-size: 20px; }
-.agent-select-name { font-size: 14px; color: #fff; font-weight: 500; }
-.agent-select-desc { font-size: 12px; color: #555; margin-top: 2px; }
-.check { margin-left: auto; color: #4d6bfe; font-weight: 700; font-size: 16px; }
-.btn-primary {
-  padding: 9px 20px;
-  background: #4d6bfe;
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
+.agent-option:hover {
+  border-color: var(--app-border-strong);
+}
+.agent-option.selected {
+  border-color: var(--app-primary);
+  background: var(--app-primary-soft);
+}
+.agent-avatar {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--app-radius);
+  background: var(--app-bg-muted);
+  color: var(--app-text-regular);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.agent-option.selected .agent-avatar {
+  background: var(--app-bg-surface);
+  color: var(--app-primary);
+}
+.agent-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.agent-name {
+  font-size: var(--app-font-size-base);
   font-weight: 500;
-  cursor: pointer;
-  transition: background 0.2s;
+  color: var(--app-text-primary);
 }
-.btn-primary:hover:not(:disabled) { background: #3a56e8; }
-.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-secondary {
-  padding: 9px 20px;
-  background: transparent;
-  color: #aaa;
-  border: 1px solid #333;
-  border-radius: 8px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 0.2s;
+.agent-desc {
+  margin-top: 2px;
+  font-size: var(--app-font-size-xs);
+  color: var(--app-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.btn-secondary:hover { border-color: #555; color: #fff; }
+.agent-check {
+  flex-shrink: 0;
+  color: var(--app-primary);
+}
 </style>

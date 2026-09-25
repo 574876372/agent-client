@@ -1,10 +1,18 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8">
     <link rel="icon" href="/favicon.ico">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Client</title>
+    <title>AgentScope</title>
+    <script>
+      // 首屏前根据已保存的外观设置加上 dark 类，避免深色用户看到浅色闪烁（键名与 stores/theme.ts 一致）
+      try {
+        var saved = JSON.parse(localStorage.getItem('agentscope-theme') || '{}')
+        var dark = saved.mode === 'dark' || (saved.mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        if (dark) document.documentElement.classList.add('dark')
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="app"></div>

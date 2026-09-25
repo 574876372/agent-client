@@ -6,16 +6,14 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      name: 'home',
+      name: 'chat',
       component: HomeView
     },
     {
-      path: '/about',
-      name: 'about',
-      // route level code-splitting
-      // this generates a separate chunk (About.[hash].js) for this route
-      // which is lazy-loaded when the route is visited.
-      component: () => import('../views/AboutView.vue')
+      // 智能体列表与对话共用同一工作台页面，仅左侧面板默认展示的页签不同
+      path: '/agents',
+      name: 'agents',
+      component: HomeView
     },
     {
       path: '/datasources',
@@ -26,6 +24,11 @@ const router = createRouter({
       path: '/knowledge',
       name: 'knowledge',
       component: () => import('../views/KnowledgeView.vue')
+    },
+    {
+      path: '/models',
+      name: 'models',
+      component: () => import('../views/ModelView.vue')
     }
   ]
 })

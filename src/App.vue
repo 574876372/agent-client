@@ -1,13 +1,10 @@
-﻿<script setup lang="ts">
-import { RouterView } from 'vue-router'
+<script setup lang="ts">
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import AppLayout from '@/layouts/AppLayout.vue'
 </script>
 
 <template>
-  <RouterView />
+  <el-config-provider :locale="zhCn">
+    <AppLayout />
+  </el-config-provider>
 </template>
-
-<style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body, #app { height: 100%; width: 100%; overflow: hidden; }
-body { background: #0f0f0f; }
-</style>

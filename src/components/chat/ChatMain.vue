@@ -11,8 +11,22 @@ import {
   type SseEventType,
   type StreamBuffers
 } from '@/utils/sse'
-import SqlApprovalCard from './SqlApprovalCard.vue'
+import GenericApprovalCard from './GenericApprovalCard.vue'
 import SqlResultTable from './SqlResultTable.vue'
+import {
+  Bot,
+  Brain,
+  ChevronRight,
+  Eye,
+  History,
+  Layers,
+  LogIn,
+  MessageSquarePlus,
+  SendHorizontal,
+  Sparkles,
+  User,
+  Wrench
+} from 'lucide-vue-next'
 
 interface Agent {
   id: string
@@ -66,9 +80,9 @@ const currentTurns = computed(() => Math.floor(messages.value.length / 2))
 /** 记忆 badge 状态：模式图标 */
 const memoryModeIcon = computed(() => {
   const mode = props.selectedAgent?.memoryMode || 'SUMMARY'
-  if (mode === 'FULL') return '📜'
-  if (mode === 'WINDOW') return '🪟'
-  return '✨'
+  if (mode === 'FULL') return History
+  if (mode === 'WINDOW') return Layers
+  return Sparkles
 })
 
 /** 记忆 badge 文字描述 */
@@ -76,10 +90,10 @@ const memoryBadgeText = computed(() => {
   const agent = props.selectedAgent
   if (!agent) return ''
   const mode = agent.memoryMode || 'SUMMARY'
-  if (isCompressing.value) return '⚡ 正在压缩历史...'
+  if (isCompressing.value) return '正在压缩历史...'
   if (mode === 'FULL') {
     const count = messages.value.length
-    if (count >= 50) return `⚠️ 已有 ${count} 条消息，注意 Token 用量`
+    if (count >= 50) return `已有 ${count} 条消息，注意 Token 用量`
     return `共 ${count} 条历史消息`
   }
   const maxTurns = agent.maxTurns ?? 10
@@ -108,15 +122,27 @@ async function loadHistory(id: string) {
   }
 }
 
-// ── SQL Agent payload 识别 + token 状态 ───────────────────────────────
-type SqlPendingPayload = {
+// ── 通用 HITL 审批与 SQL 执行结果 Payload 定义 ──────────────────────
+type GenericPendingPayload = {
   status: 'PENDING_APPROVAL'
-  datasourceId?: string
-  sql: string
-  token: string
-  estimatedRows?: number
-  warnings?: string[]
-  rowLimit?: number
+  approvalToken: string
+  token?: string
+  toolName: string
+  parameters: Record<string, any>
+  parameterSchema: {
+    type: 'object'
+    properties: Record<string, {
+      type: string
+      description?: string
+    }>
+    required?: string[]
+  }
+  preCheckMeta?: {
+    estimatedRows?: number
+    warnings?: string[]
+    sql?: string
+    [key: string]: any
+  }
 }
 type SqlExecutionPayload = {
   status: 'EXECUTED' | 'REJECTED' | 'TOKEN_EXPIRED' | 'ERROR'
@@ -135,13 +161,13 @@ type SqlExecutionPayload = {
 const consumedTokens = ref<Set<string>>(new Set())
 
 function parseSqlPayload(content: string):
-  | { kind: 'pending'; data: SqlPendingPayload }
+  | { kind: 'pending'; data: GenericPendingPayload }
   | { kind: 'execution'; data: SqlExecutionPayload }
   | null {
   const trimmed = (content ?? '').trim()
   
   const extractFromValue = (val: any):
-    | { kind: 'pending'; data: SqlPendingPayload }
+    | { kind: 'pending'; data: GenericPendingPayload }
     | { kind: 'execution'; data: SqlExecutionPayload }
     | null => {
     if (!val) return null
@@ -151,12 +177,12 @@ function parseSqlPayload(content: string):
       target = val.find(item => item && (item.status === 'PENDING_APPROVAL' || item.status === 'EXECUTED' || item.status === 'REJECTED' || item.status === 'TOKEN_EXPIRED' || item.status === 'ERROR')) || val[0]
     }
     
-    if (target?.status === 'PENDING_APPROVAL' && typeof target.sql === 'string') {
-      const token = target.token ?? target.confirmToken
+    if (target?.status === 'PENDING_APPROVAL') {
+      const token = target.approvalToken ?? target.token ?? target.confirmToken
       if (typeof token === 'string') {
         return {
           kind: 'pending',
-          data: { ...target, token } as SqlPendingPayload
+          data: { ...target, token } as GenericPendingPayload
         }
       }
     }
@@ -253,7 +279,7 @@ function syncConsumedTokensFromHistory() {
       if (seg.type !== 'observation') return
       const parsed = parseSqlPayload(seg.content)
       if (parsed?.kind === 'pending' && mi !== lastIdx) {
-        next.add(parsed.data.token)
+        next.add(parsed.data.token || '')
       }
     })
   })
@@ -459,18 +485,18 @@ async function sendMessage() {
 }
 
 /**
- * SQL 审批动作的统一入口：将 token 标记为已消费后调用 streamSend，
- * 后端 ChatBizImpl.sendMessageStream 检测 sqlAction != null 会短路到 SqlAgentBiz。
+ * 通用人机协同（HITL）审批动作的统一入口：将 token 标记为已消费后调用 streamSend，
+ * 后端 ChatBizImpl.sendMessageStream 检测 hitlAction != null 会调用 GenericHitlBiz。
  */
-async function handleSqlAction(token: string, action: 'APPROVE' | 'REJECT' | 'EDIT', editedSql?: string) {
+async function handleHitlAction(token: string, action: 'APPROVE' | 'REJECT' | 'EDIT', editedParams?: Record<string, any>) {
   if (!props.selectedConversation || isLoading.value) return
   if (consumedTokens.value.has(token)) return
   consumedTokens.value.add(token)
   await streamSend({
     content: '',
-    sqlAction: action,
-    confirmToken: token,
-    ...(action === 'EDIT' && editedSql ? { editedSql } : {})
+    hitlAction: action,
+    hitlToken: token,
+    ...(action === 'EDIT' && editedParams ? { editedParameters: editedParams } : {})
   })
 }
 
@@ -544,25 +570,30 @@ onBeforeUnmount(() => {
 
     <!-- Empty state -->
     <div v-if="!selectedConversation" class="welcome-screen">
-      <div class="welcome-logo">🤖</div>
-      <h1 class="welcome-title">AgentChat</h1>
-      <p class="welcome-sub">{{ isLoggedIn ? '选择一个对话，或新建对话开始聊天' : '登录以解锁 AI Agent 创作与对话功能' }}</p>
+      <div class="welcome-mark" aria-hidden="true"><Bot :size="28" :stroke-width="1.75" /></div>
+      <h1 class="welcome-title">{{ isLoggedIn ? '开始一次对话' : '欢迎使用 AgentScope' }}</h1>
+      <p class="welcome-sub">{{ isLoggedIn ? '从左侧选择一个对话，或新建对话与智能体交流' : '登录后即可创建智能体、管理知识库并开始对话' }}</p>
       <div class="welcome-actions">
-        <button v-if="isLoggedIn" class="btn-primary" @click="emit('newChat')">✏️ 新建对话</button>
-        <button v-else class="btn-primary" @click="emit('login')">🚀 立即登录</button>
-        <button class="btn-secondary" @click="emit('createAgent')">🧠 创建 Agent</button>
+        <el-button v-if="isLoggedIn" type="primary" @click="emit('newChat')">
+          <MessageSquarePlus :size="16" :stroke-width="1.75" /><span>新建对话</span>
+        </el-button>
+        <el-button v-else type="primary" @click="emit('login')">
+          <LogIn :size="16" :stroke-width="1.75" /><span>登录</span>
+        </el-button>
+        <el-button @click="emit('createAgent')">
+          <Bot :size="16" :stroke-width="1.75" /><span>创建智能体</span>
+        </el-button>
       </div>
     </div>
 
     <!-- Chat view -->
     <template v-else>
-      <!-- Chat header -->
-      <div class="chat-header">
+      <header class="chat-header">
         <div class="chat-header-info">
-          <span class="chat-header-icon">💬</span>
-          <div>
-            <div class="chat-header-title">{{ selectedConversation.title }}</div>
-            <div class="chat-header-agent" v-if="selectedAgent">{{ selectedAgent.name }} · {{ selectedAgent.model }}</div>
+          <div class="chat-header-title">{{ selectedConversation.title }}</div>
+          <div v-if="selectedAgent" class="chat-header-meta">
+            <span>{{ selectedAgent.name }}</span>
+            <el-tag size="small" type="info" effect="plain" class="mono">{{ selectedAgent.model }}</el-tag>
           </div>
         </div>
         <!-- 记忆状态 Badge -->
@@ -570,98 +601,96 @@ onBeforeUnmount(() => {
           v-if="selectedAgent && memoryBadgeText"
           :class="['memory-badge', { warn: memoryBadgeWarn, compressing: isCompressing }]"
         >
-          <span class="memory-badge-icon">{{ memoryModeIcon }}</span>
-          <span class="memory-badge-text">{{ memoryBadgeText }}</span>
+          <component :is="memoryModeIcon" :size="14" :stroke-width="1.75" />
+          <span>{{ memoryBadgeText }}</span>
         </div>
-      </div>
+      </header>
 
       <!-- Messages -->
       <div class="messages-area">
-        <div v-if="messages.length === 0" class="messages-empty">
-          <p>发送消息开始对话 👋</p>
-        </div>
+        <div class="messages-inner">
+          <div v-if="messages.length === 0" class="messages-empty">发送一条消息开始对话</div>
 
-        <template v-for="(msg, idx) in messages" :key="idx">
-          <div v-if="shouldShowMessage(msg, idx)" :class="['message-row', msg.role]">
-            <div class="avatar">
-              <span v-if="msg.role === 'user'">👤</span>
-              <span v-else>🤖</span>
-            </div>
-            <div class="bubble-wrap">
-              <!-- 用户消息：直接渲染 Markdown -->
-              <div v-if="msg.role === 'user'" class="bubble markdown-body" v-html="renderMarkdown(msg.content)"></div>
-              
-              <!-- 助手消息：解析流式推理与工具调用段落 -->
-              <div v-else class="bubble assistant-bubble-container">
-                <template v-for="(segment, segIdx) in parseMessageContent(msg.content)" :key="segIdx">
-                  <!-- 普通文本段落 -->
-                  <div v-if="segment.type === 'text'" class="bubble-text markdown-body" v-html="renderMarkdown(segment.content)"></div>
+          <template v-for="(msg, idx) in messages" :key="idx">
+            <div v-if="shouldShowMessage(msg, idx)" :class="['message-row', msg.role]">
+              <div class="avatar" aria-hidden="true">
+                <User v-if="msg.role === 'user'" :size="16" :stroke-width="1.75" />
+                <Bot v-else :size="16" :stroke-width="1.75" />
+              </div>
+              <div class="bubble-wrap">
+                <!-- 用户消息：直接渲染 Markdown -->
+                <div v-if="msg.role === 'user'" class="bubble markdown-body" v-html="renderMarkdown(msg.content)"></div>
 
-                  <!-- SQL Agent: PENDING_APPROVAL 审批卡片 -->
-                  <template v-else-if="segment.type === 'observation' && parseSqlPayload(segment.content)?.kind === 'pending'">
-                    <SqlApprovalCard
-                      :payload="(parseSqlPayload(segment.content)!.data as SqlPendingPayload)"
-                      :consumed="consumedTokens.has((parseSqlPayload(segment.content)!.data as SqlPendingPayload).token)"
-                      @approve="(t) => handleSqlAction(t, 'APPROVE')"
-                      @reject="(t) => handleSqlAction(t, 'REJECT')"
-                      @edit="(t, s) => handleSqlAction(t, 'EDIT', s)"
-                    />
-                  </template>
+                <!-- 助手消息：解析流式推理与工具调用段落 -->
+                <div v-else class="bubble assistant-bubble-container">
+                  <template v-for="(segment, segIdx) in parseMessageContent(msg.content)" :key="segIdx">
+                    <!-- 普通文本段落 -->
+                    <div v-if="segment.type === 'text'" class="bubble-text markdown-body" v-html="renderMarkdown(segment.content)"></div>
 
-                  <!-- SQL Agent: 执行结果表格 -->
-                  <template v-else-if="segment.type === 'observation' && parseSqlPayload(segment.content)?.kind === 'execution'">
-                    <SqlResultTable :payload="(parseSqlPayload(segment.content)!.data as SqlExecutionPayload)" />
-                  </template>
+                    <!-- SQL Agent/Generic HITL: PENDING_APPROVAL 审批卡片 -->
+                    <template v-else-if="segment.type === 'observation' && parseSqlPayload(segment.content)?.kind === 'pending'">
+                      <GenericApprovalCard
+                        :payload="(parseSqlPayload(segment.content)!.data as GenericPendingPayload)"
+                        :consumed="consumedTokens.has((parseSqlPayload(segment.content)!.data as GenericPendingPayload).token || '')"
+                        @approve="(t) => handleHitlAction(t, 'APPROVE')"
+                        @reject="(t) => handleHitlAction(t, 'REJECT')"
+                        @edit="(t, p) => handleHitlAction(t, 'EDIT', p)"
+                      />
+                    </template>
 
-                  <!-- 可折叠的推理/工具调用段落（其它情况） -->
-                  <div v-else :class="['reasoning-container', segment.type]">
-                    <div class="reasoning-header" @click="toggleCollapse(idx, segIdx)">
-                      <span class="reasoning-title-wrap">
+                    <!-- SQL Agent: 执行结果表格 -->
+                    <template v-else-if="segment.type === 'observation' && parseSqlPayload(segment.content)?.kind === 'execution'">
+                      <SqlResultTable :payload="(parseSqlPayload(segment.content)!.data as SqlExecutionPayload)" />
+                    </template>
+
+                    <!-- 可折叠的推理/工具调用段落（其它情况） -->
+                    <div v-else :class="['reasoning-container', segment.type]">
+                      <button
+                        type="button"
+                        class="reasoning-header"
+                        :aria-expanded="!isCollapsed(idx, segIdx)"
+                        @click="toggleCollapse(idx, segIdx)"
+                      >
                         <span class="reasoning-icon">
-                          <span v-if="segment.type === 'think'">🧠</span>
-                          <span v-else-if="segment.type === 'action'">🛠️</span>
-                          <span v-else-if="segment.type === 'observation'">👁️</span>
+                          <Brain v-if="segment.type === 'think'" :size="14" :stroke-width="1.75" />
+                          <Wrench v-else-if="segment.type === 'action'" :size="14" :stroke-width="1.75" />
+                          <Eye v-else-if="segment.type === 'observation'" :size="14" :stroke-width="1.75" />
                         </span>
                         <span class="reasoning-title">{{ segment.title }}</span>
-                      </span>
-                      <span :class="['chevron-icon', { 'expanded': !isCollapsed(idx, segIdx) }]">
-                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                          <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/>
-                        </svg>
-                      </span>
+                        <ChevronRight :class="['chevron-icon', { expanded: !isCollapsed(idx, segIdx) }]" :size="16" :stroke-width="1.75" />
+                      </button>
+                      <div v-show="!isCollapsed(idx, segIdx)" class="reasoning-content markdown-body" v-html="renderMarkdown(segment.content)"></div>
                     </div>
-                    <div v-show="!isCollapsed(idx, segIdx)" class="reasoning-content markdown-body" v-html="renderMarkdown(segment.content)"></div>
-                  </div>
-                </template>
+                  </template>
+                </div>
+                <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
               </div>
-              <div class="msg-time">{{ formatTime(msg.timestamp) }}</div>
             </div>
-          </div>
-        </template>
+          </template>
 
-        <!-- Tool calling indicator -->
-        <div v-if="toolCallingName" class="message-row assistant">
-          <div class="avatar"><span>🤖</span></div>
-          <div class="bubble-wrap">
-            <div class="bubble tool-calling-bubble">
-              <span class="tool-calling-icon">🛠️</span>
-              <span class="tool-calling-text">正在调用工具 <strong>{{ toolCallingName }}</strong> ...</span>
-              <span class="tool-calling-spinner"></span>
+          <!-- Tool calling indicator -->
+          <div v-if="toolCallingName" class="message-row assistant">
+            <div class="avatar" aria-hidden="true"><Bot :size="16" :stroke-width="1.75" /></div>
+            <div class="bubble-wrap">
+              <div class="status-pill">
+                <span class="spinner" aria-hidden="true"></span>
+                <span>正在调用工具 <strong class="mono">{{ toolCallingName }}</strong></span>
+              </div>
             </div>
           </div>
+
+          <!-- Loading indicator -->
+          <div v-if="isLoading && !toolCallingName" class="message-row assistant">
+            <div class="avatar" aria-hidden="true"><Bot :size="16" :stroke-width="1.75" /></div>
+            <div class="bubble-wrap">
+              <div class="bubble loading-bubble" aria-label="正在生成">
+                <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+              </div>
+            </div>
+          </div>
+
+          <div ref="messagesEndRef"></div>
         </div>
-
-        <!-- Loading indicator -->
-        <div v-if="isLoading && !toolCallingName" class="message-row assistant">
-          <div class="avatar"><span>🤖</span></div>
-          <div class="bubble-wrap">
-            <div class="bubble loading-bubble">
-              <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-            </div>
-          </div>
-        </div>
-
-        <div ref="messagesEndRef"></div>
       </div>
 
       <!-- Input area -->
@@ -670,21 +699,24 @@ onBeforeUnmount(() => {
           <textarea
             v-model="inputText"
             class="input-textarea"
-            placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-            rows="1"
+            placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+            aria-label="消息输入"
+            rows="2"
             @keydown="handleKeydown"
           ></textarea>
-          <button
-            class="send-btn"
-            :disabled="!inputText.trim() || isLoading"
-            @click="sendMessage"
-          >
-            <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-              <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
-            </svg>
-          </button>
+          <div class="input-toolbar">
+            <span class="input-hint">内容由 AI 生成，请核实重要信息</span>
+            <el-button
+              type="primary"
+              class="send-btn"
+              :disabled="!inputText.trim() || isLoading"
+              aria-label="发送"
+              @click="sendMessage"
+            >
+              <SendHorizontal :size="16" :stroke-width="1.75" />
+            </el-button>
+          </div>
         </div>
-        <p class="input-hint">AgentChat 可能会出错，请核实重要信息</p>
       </div>
     </template>
   </main>
@@ -693,59 +725,101 @@ onBeforeUnmount(() => {
 <style scoped>
 .chat-main {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #0f0f0f;
+  background: var(--app-bg-surface);
 }
 
-/* Welcome screen */
+/* 按钮内图标与文字对齐 */
+.chat-main :deep(.el-button > span) {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── 空状态 ───────────────────────────────────── */
 .welcome-screen {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 12px;
   padding: 40px;
+  background: var(--app-bg-subtle);
 }
-.welcome-logo { font-size: 64px; }
-.welcome-title { font-size: 32px; font-weight: 700; color: #fff; }
-.welcome-sub { font-size: 15px; color: #666; }
-.welcome-actions { display: flex; gap: 12px; margin-top: 8px; }
+.welcome-mark {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--app-radius-lg);
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
+}
+.welcome-title {
+  font-size: var(--app-font-size-lg);
+  font-weight: 600;
+}
+.welcome-sub {
+  font-size: var(--app-font-size-base);
+  color: var(--app-text-secondary);
+}
+.welcome-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
 
-/* Chat header */
+/* ── 头部 ─────────────────────────────────────── */
 .chat-header {
-  padding: 14px 24px;
-  border-bottom: 1px solid #1e1e1e;
-  background: #0f0f0f;
+  height: 64px;
+  flex-shrink: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--app-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
 }
-.chat-header-info { display: flex; align-items: center; gap: 12px; }
-.chat-header-icon { font-size: 20px; }
-.chat-header-title { font-size: 15px; font-weight: 600; color: #fff; }
-.chat-header-agent { font-size: 12px; color: #555; margin-top: 2px; }
-
-/* Memory status badge */
-.memory-badge {
+.chat-header-info {
+  min-width: 0;
+}
+.chat-header-title {
+  font-size: var(--app-font-size-md);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-header-meta {
+  margin-top: 2px;
   display: flex;
   align-items: center;
+  gap: 8px;
+  font-size: var(--app-font-size-xs);
+  color: var(--app-text-secondary);
+}
+
+.memory-badge {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
-  padding: 5px 12px;
-  background: rgba(77, 107, 254, 0.08);
-  border: 1px solid rgba(77, 107, 254, 0.2);
-  border-radius: 20px;
-  font-size: 12px;
-  color: #7a8fff;
-  transition: all 0.3s ease;
+  padding: 4px 10px;
+  border-radius: var(--app-radius);
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
+  font-size: var(--app-font-size-xs);
+  font-weight: 500;
   white-space: nowrap;
 }
 .memory-badge.warn {
-  background: rgba(245, 158, 11, 0.08);
-  border-color: rgba(245, 158, 11, 0.25);
-  color: #f59e0b;
+  background: var(--app-warning-soft);
+  color: var(--app-warning);
 }
 .memory-badge.compressing {
   animation: memoryPulse 1s ease-in-out infinite;
@@ -754,455 +828,357 @@ onBeforeUnmount(() => {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
-.memory-badge-icon { font-size: 14px; }
-.memory-badge-text { font-size: 11px; font-weight: 500; }
 
-
-/* Messages */
+/* ── 消息区 ───────────────────────────────────── */
 .messages-area {
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  background: var(--app-bg-subtle);
+}
+.messages-inner {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 28px 24px;
   display: flex;
   flex-direction: column;
   gap: 20px;
 }
-.messages-area::-webkit-scrollbar { width: 4px; }
-.messages-area::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 2px; }
-
 .messages-empty {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #444;
-  font-size: 15px;
+  padding: 80px 0;
+  text-align: center;
+  font-size: var(--app-font-size-base);
+  color: var(--app-text-tertiary);
 }
 
 .message-row {
   display: flex;
   gap: 12px;
-  max-width: 800px;
   width: 100%;
 }
 .message-row.user {
   flex-direction: row-reverse;
-  align-self: flex-end;
 }
-.message-row.assistant { align-self: flex-start; }
 
 .avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: #1e1e1e;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: var(--app-radius-lg);
+  border: 1px solid var(--app-border);
+  background: var(--app-bg-surface);
+  color: var(--app-text-regular);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
-  flex-shrink: 0;
 }
-.message-row.user .avatar { background: #1e2a4a; }
+.message-row.user .avatar {
+  border-color: transparent;
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
+}
 
-.bubble-wrap { display: flex; flex-direction: column; gap: 4px; max-width: calc(100% - 46px); }
-.message-row.user .bubble-wrap { align-items: flex-end; }
+.bubble-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: calc(100% - 44px);
+}
+.message-row.assistant .bubble-wrap {
+  flex: 1;
+}
+.message-row.user .bubble-wrap {
+  align-items: flex-end;
+}
 
 .bubble {
-  padding: 12px 16px;
-  border-radius: 16px;
-  font-size: 14px;
-  line-height: 1.65;
-  white-space: pre-wrap;
+  font-size: var(--app-font-size-base);
+  line-height: 1.7;
   word-break: break-word;
 }
 .message-row.user .bubble {
-  background: #4d6bfe;
-  color: #fff;
-  border-bottom-right-radius: 4px;
+  padding: 10px 14px;
+  border-radius: var(--app-radius-lg);
+  background: var(--app-primary);
+  color: var(--app-text-inverse);
 }
 .message-row.assistant .bubble {
-  background: #1a1a1a;
-  color: #e0e0e0;
-  border-bottom-left-radius: 4px;
-  border: 1px solid #252525;
+  color: var(--app-text-primary);
 }
 
-/* ── Markdown 渲染排版样式 ────────────────────────────────────────────── */
-.bubble.markdown-body {
-  white-space: normal;
-  word-break: break-word;
-}
-
-/* 链接样式 */
-.bubble.markdown-body :deep(a) {
-  color: #4d6bfe;
-  text-decoration: none;
-  border-bottom: 1px dotted #4d6bfe;
-}
-.bubble.markdown-body :deep(a:hover) {
-  color: #708aff;
-  border-bottom-style: solid;
-}
-
-/* 标题样式 */
-.bubble.markdown-body :deep(h1),
-.bubble.markdown-body :deep(h2),
-.bubble.markdown-body :deep(h3),
-.bubble.markdown-body :deep(h4) {
-  color: #ffffff;
-  margin-top: 16px;
-  margin-bottom: 8px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-.bubble.markdown-body :deep(h1) { font-size: 1.4em; border-bottom: 1px solid #252525; padding-bottom: 4px; }
-.bubble.markdown-body :deep(h2) { font-size: 1.25em; border-bottom: 1px solid #252525; padding-bottom: 4px; }
-.bubble.markdown-body :deep(h3) { font-size: 1.12em; }
-.bubble.markdown-body :deep(h4) { font-size: 1em; }
-
-/* 段落与间隔 */
-.bubble.markdown-body :deep(p) {
-  margin-top: 0;
-  margin-bottom: 10px;
+/* ── Markdown 排版 ────────────────────────────── */
+.markdown-body :deep(p) {
+  margin: 0 0 10px;
   line-height: 1.7;
-  color: #d1d1d1;
 }
-.bubble.markdown-body :deep(p:last-child) {
+.markdown-body :deep(p:last-child) {
   margin-bottom: 0;
 }
-
-/* 列表样式 */
-.bubble.markdown-body :deep(ul),
-.bubble.markdown-body :deep(ol) {
-  margin-top: 0;
-  margin-bottom: 10px;
-  padding-left: 20px;
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  margin: 16px 0 8px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--app-text-primary);
 }
-.bubble.markdown-body :deep(li) {
+.markdown-body :deep(h1) { font-size: 1.35em; }
+.markdown-body :deep(h2) { font-size: 1.2em; }
+.markdown-body :deep(h3) { font-size: 1.1em; }
+.markdown-body :deep(h4) { font-size: 1em; }
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  margin: 0 0 10px;
+  padding-left: 22px;
+}
+.markdown-body :deep(li) {
   margin-bottom: 4px;
-  line-height: 1.6;
-  color: #d1d1d1;
 }
-
-/* 引用块样式 */
-.bubble.markdown-body :deep(blockquote) {
+.markdown-body :deep(a) {
+  color: var(--app-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body :deep(blockquote) {
   margin: 12px 0;
-  padding: 8px 16px;
-  background: #141414;
-  border-left: 4px solid #4d6bfe;
-  border-radius: 4px;
+  padding: 8px 14px;
+  border-radius: var(--app-radius);
+  background: var(--app-bg-muted);
+  color: var(--app-text-secondary);
 }
-.bubble.markdown-body :deep(blockquote p) {
-  color: #888888;
-  margin: 0;
-}
-
-/* 行内代码样式 */
-.bubble.markdown-body :deep(code:not(.hljs code)) {
-  background: #252525;
-  color: #ff7b72;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: 'Fira Code', 'JetBrains Mono', Consolas, Monaco, monospace;
+.markdown-body :deep(code:not(pre code)) {
+  padding: 1px 6px;
+  border-radius: var(--app-radius-sm);
+  background: var(--app-inline-code-bg);
+  color: var(--app-inline-code-text);
+  font-family: var(--app-font-mono);
   font-size: 0.9em;
 }
-
-/* 代码块样式 */
-.bubble.markdown-body :deep(pre.hljs) {
+.markdown-body :deep(pre.hljs) {
   margin: 12px 0;
   padding: 12px 14px;
-  background: #0d1117 !important;
-  border-radius: 8px;
-  border: 1px solid #20262e;
+  border-radius: var(--app-radius-lg);
+  border: 1px solid var(--app-code-border);
+  background: var(--app-code-bg) !important;
   overflow-x: auto;
 }
-.bubble.markdown-body :deep(pre.hljs code) {
-  font-family: 'Fira Code', 'JetBrains Mono', Consolas, Monaco, monospace;
+.markdown-body :deep(pre.hljs code) {
+  font-family: var(--app-font-mono);
   font-size: 0.88em;
-  line-height: 1.5;
-  color: #c9d1d9;
+  line-height: 1.55;
+  color: var(--app-code-text);
 }
-
-/* 现代圆角防锯齿表格样式 */
-.bubble.markdown-body :deep(table) {
+.markdown-body :deep(table) {
   width: 100%;
+  margin: 12px 0;
   border-collapse: separate;
   border-spacing: 0;
-  margin: 14px 0;
-  border: 1px solid #2a2a2a;
-  border-radius: 8px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
   overflow: hidden;
-  background: #141414;
+  background: var(--app-bg-surface);
+  font-size: var(--app-font-size-sm);
 }
-.bubble.markdown-body :deep(th) {
-  background: #1c1c1c;
-  color: #ffffff;
-  font-weight: 600;
+.markdown-body :deep(th) {
+  padding: 8px 12px;
   text-align: left;
-  padding: 8px 12px;
-  border-bottom: 1px solid #2a2a2a;
+  font-weight: 500;
+  color: var(--app-text-secondary);
+  background: var(--app-bg-subtle);
+  border-bottom: 1px solid var(--app-border);
 }
-.bubble.markdown-body :deep(td) {
+.markdown-body :deep(td) {
   padding: 8px 12px;
-  border-bottom: 1px solid #222222;
-  color: #c0c0c0;
+  border-bottom: 1px solid var(--app-border);
 }
-.bubble.markdown-body :deep(tr:last-child td) {
+.markdown-body :deep(tr:last-child td) {
   border-bottom: none;
 }
-.bubble.markdown-body :deep(tr:hover td) {
-  background: #181818;
+
+/* 用户气泡在主色底上：文字、链接、行内代码统一为反白 */
+.message-row.user .markdown-body :deep(p),
+.message-row.user .markdown-body :deep(li),
+.message-row.user .markdown-body :deep(a) {
+  color: var(--app-text-inverse);
+}
+.message-row.user .markdown-body :deep(code:not(pre code)) {
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--app-text-inverse);
 }
 
-.msg-time { font-size: 11px; color: #444; padding: 0 4px; }
-
-/* Loading dots */
-.loading-bubble {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 14px 18px;
-}
-.dot {
-  width: 7px;
-  height: 7px;
-  background: #555;
-  border-radius: 50%;
-  animation: bounce 1.2s infinite;
-}
-.dot:nth-child(2) { animation-delay: 0.2s; }
-.dot:nth-child(3) { animation-delay: 0.4s; }
-@keyframes bounce {
-  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
-  40% { transform: translateY(-6px); opacity: 1; }
+.msg-time {
+  padding: 0 2px;
+  font-size: var(--app-font-size-xs);
+  color: var(--app-text-tertiary);
 }
 
-/* Input area */
-.input-area {
-  padding: 16px 24px 20px;
-  border-top: 1px solid #1e1e1e;
-  background: #0f0f0f;
-}
-.input-box {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
-  border-radius: 14px;
-  padding: 10px 12px;
-  transition: border-color 0.2s;
-}
-.input-box:focus-within { border-color: #4d6bfe; }
-
-.input-textarea {
-  flex: 1;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: #e0e0e0;
-  font-size: 14px;
-  line-height: 1.6;
-  resize: none;
-  max-height: 160px;
-  overflow-y: auto;
-  font-family: inherit;
-}
-.input-textarea::placeholder { color: #444; }
-
-.send-btn {
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  background: #4d6bfe;
-  border: none;
-  color: #fff;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: background 0.2s, opacity 0.2s;
-}
-.send-btn:hover:not(:disabled) { background: #3a56e8; }
-.send-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-
-.input-hint {
-  text-align: center;
-  font-size: 11px;
-  color: #333;
-  margin-top: 8px;
-}
-
-/* Shared buttons */
-.btn-primary {
-  padding: 9px 20px;
-  background: #4d6bfe;
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.btn-primary:hover:not(:disabled) { background: #3a56e8; }
-.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.btn-secondary {
-  padding: 9px 20px;
-  background: transparent;
-  color: #aaa;
-  border: 1px solid #333;
-  border-radius: 8px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.btn-secondary:hover { border-color: #555; color: #fff; }
-
-/* ── 流式推理/工具调用折叠面板样式 ────────────────────────────────── */
+/* ── 推理 / 工具调用折叠面板 ──────────────────── */
 .assistant-bubble-container {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
-
-.bubble-text {
-  color: #d1d1d1;
-}
-
 .reasoning-container {
-  margin: 4px 0;
-  border-radius: 10px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--app-bg-surface);
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.02);
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
-
-/* 🎨 思考、工具调用、工具返回专属配色风格与磨砂效果 */
-.reasoning-container.think {
-  border-left: 3px solid #8a2be2;
-  background: rgba(22, 19, 36, 0.8);
-  box-shadow: 0 4px 20px rgba(138, 43, 226, 0.05);
-}
-.reasoning-container.action {
-  border-left: 3px solid #ffa500;
-  background: rgba(36, 27, 19, 0.8);
-  box-shadow: 0 4px 20px rgba(255, 165, 0, 0.05);
-}
-.reasoning-container.observation {
-  border-left: 3px solid #00ced1;
-  background: rgba(19, 36, 36, 0.8);
-  box-shadow: 0 4px 20px rgba(0, 206, 209, 0.05);
-}
-
-/* 折叠面板头部 */
 .reasoning-header {
-  padding: 10px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  user-select: none;
-  font-size: 13px;
-  transition: background 0.2s ease;
-}
-.reasoning-header:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.reasoning-title-wrap {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 9px 12px;
+  border: none;
+  background: transparent;
+  font-size: var(--app-font-size-sm);
+  color: var(--app-text-regular);
+  text-align: left;
+  cursor: pointer;
 }
-
+.reasoning-header:hover {
+  background: var(--app-bg-subtle);
+}
 .reasoning-icon {
-  font-size: 14px;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: var(--app-radius-sm);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
 }
-
+.reasoning-container.think .reasoning-icon {
+  background: var(--app-primary-soft);
+  color: var(--app-primary);
+}
+.reasoning-container.action .reasoning-icon {
+  background: var(--app-warning-soft);
+  color: var(--app-warning);
+}
+.reasoning-container.observation .reasoning-icon {
+  background: var(--app-success-soft);
+  color: var(--app-success);
+}
 .reasoning-title {
-  font-weight: 600;
-  color: #e0e0e0;
-  letter-spacing: 0.5px;
+  flex: 1;
+  font-weight: 500;
 }
-
-/* 折叠箭头微动画 */
 .chevron-icon {
-  display: inline-flex;
-  align-items: center;
-  color: #777;
-  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), color 0.2s;
-}
-.reasoning-header:hover .chevron-icon {
-  color: #bbb;
+  color: var(--app-text-tertiary);
+  transition: transform 0.2s ease;
 }
 .chevron-icon.expanded {
   transform: rotate(90deg);
 }
-
-/* 折叠内容区 */
 .reasoning-content {
-  padding: 12px 14px;
-  border-top: 1px dashed rgba(255, 255, 255, 0.05);
-  font-size: 13px;
-  line-height: 1.6;
-  color: #b0b0b0;
-  background: rgba(0, 0, 0, 0.1);
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--app-border);
+  font-size: var(--app-font-size-sm);
+  color: var(--app-text-secondary);
 }
-
 .reasoning-content.markdown-body :deep(p) {
-  font-size: 13px;
-  line-height: 1.6;
-  color: #b0b0b0;
+  font-size: var(--app-font-size-sm);
   margin-bottom: 8px;
-}
-.reasoning-content.markdown-body :deep(p:last-child) {
-  margin-bottom: 0;
 }
 .reasoning-content.markdown-body :deep(pre.hljs) {
   margin: 8px 0;
   padding: 10px 12px;
 }
 
-/* ── 工具调用实时反馈气泡 ────────────────────────────────── */
-.tool-calling-bubble {
-  display: flex;
+/* ── 状态指示 ─────────────────────────────────── */
+.status-pill {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 16px;
-  background: linear-gradient(135deg, rgba(36, 27, 19, 0.9), rgba(28, 22, 15, 0.9));
-  border: 1px solid rgba(255, 165, 0, 0.2);
-  border-left: 3px solid #ffa500;
-  animation: tool-calling-pulse 2s ease-in-out infinite;
+  align-self: flex-start;
+  padding: 6px 12px;
+  border-radius: var(--app-radius);
+  background: var(--app-warning-soft);
+  color: var(--app-warning);
+  font-size: var(--app-font-size-sm);
 }
-@keyframes tool-calling-pulse {
-  0%, 100% { border-color: rgba(255, 165, 0, 0.3); }
-  50% { border-color: rgba(255, 165, 0, 0.6); }
-}
-.tool-calling-icon {
-  font-size: 16px;
-}
-.tool-calling-text {
-  font-size: 13px;
-  color: #e0c080;
-}
-.tool-calling-text strong {
-  color: #ffb84d;
-}
-.tool-calling-spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(255, 165, 0, 0.2);
-  border-top-color: #ffa500;
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
   border-radius: 50%;
-  animation: tool-spin 0.8s linear infinite;
+  animation: spin 0.8s linear infinite;
 }
-@keyframes tool-spin {
+@keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+.loading-bubble {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 10px 0;
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--app-text-tertiary);
+  animation: bounce 1.2s infinite;
+}
+.dot:nth-child(2) { animation-delay: 0.2s; }
+.dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-5px); opacity: 1; }
+}
+
+/* ── 输入区 ───────────────────────────────────── */
+.input-area {
+  flex-shrink: 0;
+  padding: 12px 24px 20px;
+  background: var(--app-bg-subtle);
+}
+.input-box {
+  max-width: 772px;
+  margin: 0 auto;
+  padding: 10px 10px 8px 14px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: var(--app-radius-lg);
+  background: var(--app-bg-surface);
+  box-shadow: var(--app-shadow-sm);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.input-box:focus-within {
+  border-color: var(--app-primary);
+  box-shadow: 0 0 0 3px var(--app-primary-soft);
+}
+.input-textarea {
+  width: 100%;
+  max-height: 160px;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--app-text-primary);
+  font-size: var(--app-font-size-base);
+  line-height: 1.6;
+}
+.input-textarea::placeholder {
+  color: var(--app-text-disabled);
+}
+.input-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+}
+.input-hint {
+  font-size: var(--app-font-size-xs);
+  color: var(--app-text-tertiary);
+}
+.send-btn {
+  width: 36px;
+  padding: 0;
 }
 </style>

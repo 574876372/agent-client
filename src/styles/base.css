@@ -1,0 +1,198 @@
+/* 全局基础样式：重置、排版、滚动条、Element Plus 细节修正与管理页通用布局 */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--app-font-family);
+  font-size: var(--app-font-size-base);
+  line-height: 1.5;
+  color: var(--app-text-primary);
+  background: var(--app-bg-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+
+a {
+  color: var(--app-primary);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--app-primary-hover);
+}
+
+.mono {
+  font-family: var(--app-font-mono);
+}
+
+/* ── 滚动条 ─────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--app-border-strong);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── Element Plus 细节修正 ─────────────────────── */
+.el-table {
+  --el-table-header-bg-color: var(--app-bg-subtle);
+  --el-table-header-text-color: var(--app-text-secondary);
+  --el-table-row-hover-bg-color: var(--app-bg-subtle);
+  --el-table-border-color: var(--app-border);
+  font-size: var(--app-font-size-base);
+}
+.el-table th.el-table__cell {
+  font-size: var(--app-font-size-xs);
+  font-weight: 500;
+}
+.el-dialog {
+  --el-dialog-border-radius: var(--app-radius-lg);
+  --el-dialog-padding-primary: 20px;
+}
+.el-dialog__header {
+  border-bottom: 1px solid var(--app-border);
+  margin-right: 0;
+  padding-bottom: 16px;
+}
+.el-dialog__title {
+  font-size: var(--app-font-size-md);
+  font-weight: 600;
+  color: var(--app-text-primary);
+}
+.el-dialog__footer {
+  border-top: 1px solid var(--app-border);
+  padding-top: 16px;
+}
+.el-form-item__label {
+  font-weight: 500;
+  color: var(--app-text-regular);
+}
+.el-button {
+  font-weight: 500;
+}
+.el-tag {
+  font-weight: 500;
+}
+/* 分段选择：灰底 + 白色选中块，比默认的主色实心块更克制 */
+.el-segmented {
+  --el-segmented-bg-color: var(--app-bg-muted);
+  --el-segmented-color: var(--app-text-secondary);
+  --el-segmented-item-selected-bg-color: var(--app-bg-surface);
+  --el-segmented-item-selected-color: var(--app-text-primary);
+  --el-segmented-item-hover-bg-color: transparent;
+  --el-segmented-item-hover-color: var(--app-text-primary);
+  --el-segmented-item-active-bg-color: transparent;
+}
+.el-segmented__item-selected {
+  box-shadow: var(--app-shadow-sm);
+}
+.el-segmented__item.is-selected {
+  font-weight: 500;
+}
+
+/* ── 管理页通用布局 ──────────────────────────────── */
+.page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.page-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--app-space-6) var(--app-space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-space-5);
+}
+.page-title-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--app-space-4);
+}
+.page-title-row .page-title-text {
+  flex: 1;
+  min-width: 0;
+}
+.page-title {
+  font-size: var(--app-font-size-xl);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--app-text-primary);
+}
+.page-desc {
+  margin-top: var(--app-space-1);
+  font-size: var(--app-font-size-base);
+  color: var(--app-text-secondary);
+}
+
+.card {
+  background: var(--app-bg-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--app-space-3);
+  padding: 14px var(--app-space-5);
+  border-bottom: 1px solid var(--app-border);
+}
+.card-header .card-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+.card-title {
+  font-size: var(--app-font-size-md);
+  font-weight: 600;
+  color: var(--app-text-primary);
+}
+.card-subtitle {
+  margin-top: 2px;
+  font-size: var(--app-font-size-xs);
+  color: var(--app-text-secondary);
+}
+.card-body {
+  padding: var(--app-space-5);
+}
+
+.text-secondary {
+  color: var(--app-text-secondary);
+}
+.text-tertiary {
+  color: var(--app-text-tertiary);
+}
+
+/* 图标与文字同行时的统一对齐 */
+.icon-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

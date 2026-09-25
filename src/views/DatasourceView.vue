@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive } from 'vue'
-import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { Plus } from 'lucide-vue-next'
+import PageHeader from '@/components/layout/PageHeader.vue'
 import { datasourceApi, type DatasourceRequest, type DatasourceResponse } from '@/api/datasource'
-
-const router = useRouter()
 
 const list = ref<DatasourceResponse[]>([])
 const loading = ref(false)
-const showEditor = ref(false)
+const dialogVisible = ref(false)
 const editing = ref<DatasourceResponse | null>(null)
+const formRef = ref<FormInstance>()
+const saving = ref(false)
+const testing = ref(false)
+const testingId = ref<string | null>(null)
 
 const form = reactive<DatasourceRequest>({
   id: undefined,
@@ -21,7 +25,26 @@ const form = reactive<DatasourceRequest>({
   enabled: 1,
 })
 
+const rules: FormRules = {
+  name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
+  jdbcUrl: [{ required: true, message: '请输入 JDBC URL', trigger: 'blur' }],
+  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+  passwordPlain: [
+    {
+      validator: (_rule, value, callback) => {
+        if (!editing.value && !value) callback(new Error('新增时密码必填'))
+        else callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+}
+
 const testResult = ref<{ ok: boolean; message: string } | null>(null)
+
+function errMsg(e: any) {
+  return e?.response?.data?.message ?? e?.message ?? '未知错误'
+}
 
 async function loadList() {
   loading.value = true
@@ -29,7 +52,7 @@ async function loadList() {
     const res = await datasourceApi.list()
     list.value = res.data ?? []
   } catch (e: any) {
-    console.error('[Datasource] 列表加载失败', e)
+    ElMessage.error('加载失败：' + errMsg(e))
   } finally {
     loading.value = false
   }
@@ -48,7 +71,8 @@ function openCreate() {
     enabled: 1,
   })
   testResult.value = null
-  showEditor.value = true
+  dialogVisible.value = true
+  formRef.value?.clearValidate()
 }
 
 function openEdit(ds: DatasourceResponse) {
@@ -64,61 +88,77 @@ function openEdit(ds: DatasourceResponse) {
     enabled: ds.enabled,
   })
   testResult.value = null
-  showEditor.value = true
+  dialogVisible.value = true
+  formRef.value?.clearValidate()
 }
 
 async function submit() {
-  if (!form.name || !form.jdbcUrl || !form.username) {
-    alert('请填写名称、JDBC URL、用户名')
-    return
-  }
-  if (!editing.value && !form.passwordPlain) {
-    alert('新增时密码必填')
-    return
-  }
+  if (!(await formRef.value?.validate().catch(() => false))) return
+  saving.value = true
   try {
     if (editing.value) {
       await datasourceApi.update(editing.value.id, form)
     } else {
       await datasourceApi.create(form)
     }
-    showEditor.value = false
+    ElMessage.success('已保存')
+    dialogVisible.value = false
     await loadList()
   } catch (e: any) {
-    alert('保存失败：' + (e?.response?.data?.message ?? e?.message ?? '未知错误'))
+    ElMessage.error('保存失败：' + errMsg(e))
+  } finally {
+    saving.value = false
   }
 }
 
 async function remove(ds: DatasourceResponse) {
-  if (!confirm(`确认删除数据源「${ds.name}」？`)) return
+  try {
+    await ElMessageBox.confirm(`确认删除数据源「${ds.name}」？`, '删除数据源', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      confirmButtonClass: 'el-button--danger',
+    })
+  } catch {
+    return
+  }
   try {
     await datasourceApi.remove(ds.id)
+    ElMessage.success('已删除')
     await loadList()
   } catch (e: any) {
-    alert('删除失败：' + (e?.response?.data?.message ?? e?.message ?? '未知错误'))
+    ElMessage.error('删除失败：' + errMsg(e))
   }
 }
 
 async function testInEditor() {
   testResult.value = null
+  testing.value = true
   try {
     const res = editing.value
       ? await datasourceApi.testExisting(editing.value.id, form)
       : await datasourceApi.testNew(form)
     testResult.value = res.data?.success
       ? { ok: true, message: '连接成功' }
-      : { ok: false, message: '连接失败（用户名/密码 / 网络 / 库不可达）' }
+      : { ok: false, message: '连接失败：请检查用户名、密码、网络或数据库是否可达' }
   } catch (e: any) {
-    testResult.value = { ok: false, message: e?.response?.data?.message ?? e?.message ?? '请求失败' }
+    testResult.value = { ok: false, message: errMsg(e) }
+  } finally {
+    testing.value = false
   }
 }
 
 async function quickTest(ds: DatasourceResponse) {
+  testingId.value = ds.id
   try {
-    const res = await datasourceApi.testExisting(ds.id, {})
-    alert(res.data?.success ? `「${ds.name}」连接成功` : `「${ds.name}」连接失败`)
+    // 后端仅从库中回填密码，连接参数需随请求提交
+    const res = await datasourceApi.testExisting(ds.id, { jdbcUrl: ds.jdbcUrl, username: ds.username, dbType: ds.dbType })
+    if (res.data?.success) ElMessage.success(`「${ds.name}」连接成功`)
+    else ElMessage.error(`「${ds.name}」连接失败`)
   } catch (e: any) {
-    alert('测试失败：' + (e?.response?.data?.message ?? e?.message ?? '未知错误'))
+    ElMessage.error('测试失败：' + errMsg(e))
+  } finally {
+    testingId.value = null
   }
 }
 
@@ -126,294 +166,141 @@ onMounted(loadList)
 </script>
 
 <template>
-  <div class="ds-page">
-    <header class="ds-header">
-      <button class="btn-back" @click="router.push('/')">← 返回</button>
-      <h1>数据源管理</h1>
-      <button class="btn-primary" @click="openCreate">+ 新增数据源</button>
-    </header>
+  <div class="page">
+    <PageHeader group="管理" title="数据源" />
 
-    <section class="ds-table-wrap">
-      <table class="ds-table">
-        <thead>
-          <tr>
-            <th>名称</th>
-            <th>类型</th>
-            <th>JDBC URL</th>
-            <th>用户名</th>
-            <th>启用</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="loading">
-            <td colspan="6" class="empty">加载中...</td>
-          </tr>
-          <tr v-else-if="list.length === 0">
-            <td colspan="6" class="empty">暂无数据源，点击右上角"新增"开始注册</td>
-          </tr>
-          <tr v-for="ds in list" :key="ds.id">
-            <td>
-              <div class="ds-name">{{ ds.name }}</div>
-              <div class="ds-desc">{{ ds.description || '—' }}</div>
-            </td>
-            <td>{{ ds.dbType }}</td>
-            <td class="mono">{{ ds.jdbcUrl }}</td>
-            <td>{{ ds.username }}</td>
-            <td>
-              <span :class="['badge', ds.enabled === 1 ? 'on' : 'off']">
-                {{ ds.enabled === 1 ? '启用' : '禁用' }}
-              </span>
-            </td>
-            <td class="actions">
-              <button class="btn-link" @click="quickTest(ds)">测试</button>
-              <button class="btn-link" @click="openEdit(ds)">编辑</button>
-              <button class="btn-link danger" @click="remove(ds)">删除</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <!-- Editor Modal -->
-    <div v-if="showEditor" class="modal-mask" @click.self="showEditor = false">
-      <div class="modal">
-        <header class="modal-header">
-          <h2>{{ editing ? '编辑数据源' : '新增数据源' }}</h2>
-          <button class="btn-close" @click="showEditor = false">×</button>
-        </header>
-
-        <div class="modal-body">
-          <label>
-            <span>名称 *</span>
-            <input v-model="form.name" placeholder="例如：线上订单库" />
-          </label>
-          <label>
-            <span>描述（LLM 决策依据）</span>
-            <textarea
-              v-model="form.description"
-              rows="2"
-              placeholder="例如：包含 t_order / t_customer，存储线上正式交易数据"
-            />
-          </label>
-          <label>
-            <span>数据库类型 *</span>
-            <select v-model="form.dbType">
-              <option value="mysql">MySQL</option>
-            </select>
-          </label>
-          <label>
-            <span>JDBC URL *</span>
-            <input
-              v-model="form.jdbcUrl"
-              placeholder="jdbc:mysql://host:3306/db?useSSL=false&characterEncoding=utf8"
-            />
-          </label>
-          <label>
-            <span>用户名 *</span>
-            <input v-model="form.username" placeholder="只读账号（强烈建议）" />
-          </label>
-          <label>
-            <span>密码 {{ editing ? '（留空 = 保留原密码）' : '*' }}</span>
-            <input v-model="form.passwordPlain" type="password" autocomplete="off" />
-          </label>
-          <label class="inline">
-            <input type="checkbox" :checked="form.enabled === 1" @change="form.enabled = ($event.target as HTMLInputElement).checked ? 1 : 0" />
-            <span>启用</span>
-          </label>
-
-          <div v-if="testResult" :class="['test-result', testResult.ok ? 'ok' : 'fail']">
-            {{ testResult.message }}
-          </div>
+    <div class="page-body">
+      <div class="page-title-row">
+        <div class="page-title-text">
+          <h1 class="page-title">数据源</h1>
+          <p class="page-desc">注册业务数据库，供智能体的 SQL 查询工具使用。密码加密存储，查询前需人工审批。</p>
         </div>
-
-        <footer class="modal-footer">
-          <button class="btn-secondary" @click="testInEditor">测试连接</button>
-          <div class="spacer" />
-          <button class="btn-secondary" @click="showEditor = false">取消</button>
-          <button class="btn-primary" @click="submit">保存</button>
-        </footer>
+        <el-button type="primary" @click="openCreate"><Plus :size="16" :stroke-width="2" /><span>新增数据源</span></el-button>
       </div>
+
+      <section class="card">
+        <el-table :data="list" v-loading="loading" row-key="id" empty-text="暂无数据源，点击右上角「新增数据源」开始注册">
+          <el-table-column label="名称" min-width="200">
+            <template #default="{ row }">
+              <div class="cell-strong">{{ row.name }}</div>
+              <div class="cell-sub">{{ row.description || '—' }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column label="类型" width="90">
+            <template #default="{ row }"><span class="mono">{{ row.dbType }}</span></template>
+          </el-table-column>
+          <el-table-column label="JDBC URL" min-width="320" show-overflow-tooltip>
+            <template #default="{ row }"><span class="mono text-secondary">{{ row.jdbcUrl }}</span></template>
+          </el-table-column>
+          <el-table-column label="用户名" prop="username" width="120" />
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }">
+              <el-tag :type="row.enabled === 1 ? 'success' : 'danger'" size="small">{{ row.enabled === 1 ? '启用' : '停用' }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="170" align="right" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" :loading="testingId === row.id" @click="quickTest(row as DatasourceResponse)">测试</el-button>
+              <el-button link type="primary" @click="openEdit(row as DatasourceResponse)">编辑</el-button>
+              <el-button link type="danger" @click="remove(row as DatasourceResponse)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </section>
     </div>
+
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑数据源' : '新增数据源'" width="560px" align-center>
+      <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
+        <el-form-item label="名称" prop="name">
+          <el-input v-model="form.name" placeholder="例如：线上订单库" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input
+            v-model="form.description"
+            type="textarea"
+            :rows="2"
+            placeholder="例如：包含 t_order / t_customer，存储线上正式交易数据"
+          />
+          <div class="field-hint">智能体会根据描述判断何时查询这个库，请写清楚库里有什么数据</div>
+        </el-form-item>
+        <div class="form-grid">
+          <el-form-item label="数据库类型">
+            <el-select v-model="form.dbType">
+              <el-option label="MySQL" value="mysql" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="用户名" prop="username">
+            <el-input v-model="form.username" placeholder="强烈建议使用只读账号" />
+          </el-form-item>
+        </div>
+        <el-form-item label="JDBC URL" prop="jdbcUrl">
+          <el-input v-model="form.jdbcUrl" placeholder="jdbc:mysql://host:3306/db?useSSL=false&characterEncoding=utf8" />
+        </el-form-item>
+        <el-form-item label="密码" prop="passwordPlain">
+          <el-input
+            v-model="form.passwordPlain"
+            type="password"
+            show-password
+            autocomplete="off"
+            :placeholder="editing ? '留空表示保留原密码' : ''"
+          />
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="form.enabled" :active-value="1" :inactive-value="0" />
+        </el-form-item>
+        <el-alert v-if="testResult" :type="testResult.ok ? 'success' : 'error'" :title="testResult.message" :closable="false" show-icon />
+      </el-form>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button :loading="testing" @click="testInEditor">测试连接</el-button>
+          <span class="spacer" />
+          <el-button @click="dialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="saving" @click="submit">保存</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.ds-page {
-  min-height: 100vh;
-  padding: 24px 32px;
-  background: #0f0f0f;
-  color: #e8e8e8;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-}
-.ds-header {
-  display: flex;
+.page-title-row :deep(.el-button > span) {
+  display: inline-flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 24px;
-}
-.ds-header h1 {
-  flex: 1;
-  font-size: 22px;
-  font-weight: 600;
-}
-.btn-back {
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  color: #e8e8e8;
-  padding: 6px 14px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.btn-primary {
-  background: #4f46e5;
-  border: none;
-  color: white;
-  padding: 8px 18px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-weight: 500;
-}
-.btn-primary:hover { background: #6366f1; }
-.btn-secondary {
-  background: #2a2a2a;
-  border: 1px solid #3a3a3a;
-  color: #e8e8e8;
-  padding: 8px 18px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.btn-secondary:hover { background: #333; }
-
-.ds-table-wrap {
-  background: #1a1a1a;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid #2a2a2a;
-}
-.ds-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-.ds-table th {
-  background: #222;
-  text-align: left;
-  padding: 12px 16px;
-  font-size: 13px;
-  font-weight: 500;
-  color: #aaa;
-  border-bottom: 1px solid #2a2a2a;
-}
-.ds-table td {
-  padding: 14px 16px;
-  border-bottom: 1px solid #222;
-  font-size: 14px;
-  vertical-align: top;
-}
-.ds-table tr:last-child td { border-bottom: none; }
-.ds-name { font-weight: 500; margin-bottom: 4px; }
-.ds-desc { font-size: 12px; color: #888; max-width: 260px; }
-.mono { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; color: #ccc; max-width: 320px; word-break: break-all; }
-.empty { text-align: center; color: #666; padding: 40px 0 !important; }
-.badge {
-  padding: 2px 10px;
-  border-radius: 10px;
-  font-size: 12px;
-}
-.badge.on { background: #14532d; color: #86efac; }
-.badge.off { background: #4a1d1d; color: #fca5a5; }
-.actions { white-space: nowrap; }
-.btn-link {
-  background: transparent;
-  border: none;
-  color: #818cf8;
-  cursor: pointer;
-  margin-right: 12px;
-  font-size: 13px;
-}
-.btn-link:hover { color: #a5b4fc; }
-.btn-link.danger { color: #f87171; }
-.btn-link.danger:hover { color: #fca5a5; }
-
-.modal-mask {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-.modal {
-  background: #1a1a1a;
-  border: 1px solid #2a2a2a;
-  border-radius: 10px;
-  width: 520px;
-  max-height: 86vh;
-  display: flex;
-  flex-direction: column;
-}
-.modal-header {
-  display: flex;
-  align-items: center;
-  padding: 16px 20px;
-  border-bottom: 1px solid #2a2a2a;
-}
-.modal-header h2 { flex: 1; font-size: 17px; font-weight: 600; }
-.btn-close {
-  background: transparent;
-  border: none;
-  color: #888;
-  font-size: 22px;
-  cursor: pointer;
-}
-.modal-body {
-  padding: 20px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.modal-body label {
-  display: flex;
-  flex-direction: column;
   gap: 6px;
 }
-.modal-body label.inline {
-  flex-direction: row;
+.card :deep(.el-table) {
+  border-radius: var(--app-radius-lg);
+}
+.cell-strong {
+  font-weight: 500;
+  color: var(--app-text-primary);
+}
+.cell-sub {
+  margin-top: 2px;
+  font-size: var(--app-font-size-xs);
+  color: var(--app-text-tertiary);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+.field-hint {
+  width: 100%;
+  margin-top: 4px;
+  font-size: var(--app-font-size-xs);
+  line-height: 1.5;
+  color: var(--app-text-tertiary);
+}
+.dialog-footer {
+  display: flex;
   align-items: center;
   gap: 8px;
 }
-.modal-body span {
-  font-size: 13px;
-  color: #aaa;
+.spacer {
+  flex: 1;
 }
-.modal-body input, .modal-body textarea, .modal-body select {
-  background: #0f0f0f;
-  border: 1px solid #2a2a2a;
-  border-radius: 6px;
-  color: #e8e8e8;
-  padding: 8px 10px;
-  font-size: 14px;
-  font-family: inherit;
+:deep(.el-select) {
+  width: 100%;
 }
-.modal-body input:focus, .modal-body textarea:focus, .modal-body select:focus {
-  outline: none;
-  border-color: #4f46e5;
-}
-.test-result {
-  padding: 8px 12px;
-  border-radius: 6px;
-  font-size: 13px;
-}
-.test-result.ok { background: #14532d; color: #86efac; }
-.test-result.fail { background: #4a1d1d; color: #fca5a5; }
-.modal-footer {
-  padding: 14px 20px;
-  border-top: 1px solid #2a2a2a;
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.spacer { flex: 1; }
 </style>

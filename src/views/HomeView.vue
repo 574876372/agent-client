@@ -1,19 +1,15 @@
-
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { agentApi, chatApi } from '@/api/chat'
+import { useUserStore } from '@/stores/user'
 
-import LoginModal from '@/components/auth/LoginModal.vue'
 import CreateAgentModal from '@/components/agent/CreateAgentModal.vue'
 import AppSidebar from '@/components/chat/AppSidebar.vue'
 import ChatMain from '@/components/chat/ChatMain.vue'
 import NewChatModal from '@/components/chat/NewChatModal.vue'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-interface User {
-  id: string
-  username: string
-}
 interface Agent {
   id: string
   name: string
@@ -28,49 +24,38 @@ interface Conversation {
   createdAt: string
 }
 
+const route = useRoute()
+const router = useRouter()
+const user = useUserStore()
+
 // ─── State ───────────────────────────────────────────────────────────────────
-const sidebarTab = ref<'agents' | 'conversations'>('conversations')
+/** 左侧面板页签由路由决定：/ 为对话，/agents 为智能体 */
+const sidebarTab = computed<'agents' | 'conversations'>(() => (route.name === 'agents' ? 'agents' : 'conversations'))
 const agents = ref<Agent[]>([])
 const conversations = ref<Conversation[]>([])
 
 const selectedAgent = ref<Agent | null>(null)
 const selectedConversation = ref<Conversation | null>(null)
 
-// ─── Auth State ──────────────────────────────────────────────────────────────
-const currentUser = ref<User | null>(null)
-const isLoggedIn = computed(() => !!currentUser.value)
-const showLoginModal = ref(false)
-
 // ─── Dialogs ─────────────────────────────────────────────────────────────────
 const showCreateAgent = ref(false)
 const showNewChat = ref(false)
 
-// ─── Auth Methods ────────────────────────────────────────────────────────────
-function handleLoginSuccess(user: User) {
-  currentUser.value = user
-  localStorage.setItem('agent_user_id', user.id)
-  localStorage.setItem('agent_username', user.username)
-  showLoginModal.value = false
-  loadAgents()
-  loadConversations()
+function switchTab(tab: 'agents' | 'conversations') {
+  router.push(tab === 'agents' ? '/agents' : '/')
 }
 
-function handleLogout() {
-  currentUser.value = null
-  localStorage.removeItem('agent_user_id')
-  localStorage.removeItem('agent_username')
-  agents.value = []
-  conversations.value = []
-  selectedConversation.value = null
-  selectedAgent.value = null
+function openCreateAgent() {
+  user.requireLogin(() => {
+    showCreateAgent.value = true
+    switchTab('agents')
+  })
 }
 
-function checkAuth(callback: () => void) {
-  if (!isLoggedIn.value) {
-    showLoginModal.value = true
-  } else {
-    callback()
-  }
+function openNewChat() {
+  user.requireLogin(() => {
+    showNewChat.value = true
+  })
 }
 
 // ─── API calls ───────────────────────────────────────────────────────────────
@@ -113,84 +98,67 @@ function handleConversationDeleted(id: string) {
 async function handleConversationCreated(conv: Conversation) {
   await loadConversations()
   await selectConversation(conv)
-  sidebarTab.value = 'conversations'
+  switchTab('conversations')
 }
 
-onMounted(() => {
-  const userId = localStorage.getItem('agent_user_id')
-  const username = localStorage.getItem('agent_username')
-  if (userId && username) {
-    currentUser.value = { id: userId, username }
-    loadAgents()
-    loadConversations()
-  }
-})
+// 登录后加载数据，退出后清空
+watch(
+  () => user.isLoggedIn,
+  (loggedIn) => {
+    if (loggedIn) {
+      loadAgents()
+      loadConversations()
+    } else {
+      agents.value = []
+      conversations.value = []
+      selectedConversation.value = null
+      selectedAgent.value = null
+    }
+  },
+  { immediate: true }
+)
 </script>
 
 <template>
-  <div class="app-layout">
-
-    <!-- ══════════════ SIDEBAR ══════════════ -->
+  <div class="workspace">
     <AppSidebar
       :sidebarTab="sidebarTab"
       :agents="agents"
       :conversations="conversations"
       :selectedConversationId="selectedConversation?.id ?? null"
-      :isLoggedIn="isLoggedIn"
-      :username="currentUser?.username ?? null"
-      @update:sidebarTab="sidebarTab = $event"
+      :isLoggedIn="user.isLoggedIn"
+      @update:sidebarTab="switchTab"
       @selectConversation="selectConversation"
       @conversation-deleted="handleConversationDeleted"
       @agent-deleted="handleAgentDeleted"
-      @newChat="checkAuth(() => showNewChat = true)"
-      @createAgent="checkAuth(() => { showCreateAgent = true; sidebarTab = 'agents' })"
-      @login="showLoginModal = true"
-      @logout="handleLogout"
+      @newChat="openNewChat"
+      @createAgent="openCreateAgent"
     />
 
-    <!-- ══════════════ MAIN CHAT AREA ══════════════ -->
     <ChatMain
       :selectedConversation="selectedConversation"
       :selectedAgent="selectedAgent"
-      :isLoggedIn="isLoggedIn"
-      @newChat="checkAuth(() => showNewChat = true)"
-      @login="showLoginModal = true"
-      @createAgent="checkAuth(() => { showCreateAgent = true; sidebarTab = 'agents' })"
+      :isLoggedIn="user.isLoggedIn"
+      @newChat="openNewChat"
+      @login="user.loginVisible = true"
+      @createAgent="openCreateAgent"
     />
 
-    <!-- ══════════════ CREATE AGENT DIALOG ══════════════ -->
-    <CreateAgentModal
-      v-model:show="showCreateAgent"
-      @agent-created="loadAgents"
-    />
+    <CreateAgentModal v-model:show="showCreateAgent" @agent-created="loadAgents" />
 
-    <!-- ══════════════ NEW CHAT DIALOG ══════════════ -->
     <NewChatModal
       v-model:show="showNewChat"
       :agents="agents"
       @conversation-created="handleConversationCreated"
-      @goCreateAgent="showCreateAgent = true; sidebarTab = 'agents'"
+      @goCreateAgent="openCreateAgent"
     />
-
-    <!-- ══════════════ LOGIN DIALOG ══════════════ -->
-    <LoginModal
-      v-model:show="showLoginModal"
-      @login-success="handleLoginSuccess"
-    />
-
   </div>
 </template>
 
 <style scoped>
-/* ── Reset & Layout ─────────────────────────────────────────────────────── */
-* { box-sizing: border-box; margin: 0; padding: 0; }
-
-.app-layout {
+.workspace {
   display: flex;
-  height: 100vh;
-  background: #0f0f0f;
-  color: #e8e8e8;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  height: 100%;
   overflow: hidden;
 }
 </style>

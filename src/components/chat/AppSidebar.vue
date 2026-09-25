@@ -1,14 +1,20 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
+import { computed, ref } from 'vue'
+import { ElMessageBox } from 'element-plus'
+import { Plus, Search, Trash2, Bot, MessageSquare } from 'lucide-vue-next'
 import { agentApi, chatApi } from '@/api/chat'
 
-const router = useRouter()
+/**
+ * 工作台左侧面板：对话列表 / 智能体列表（页签由路由决定），支持本地搜索过滤。
+ */
 
 interface Agent {
   id: string
   name: string
   description: string
-  model: string
+  model?: string
+  modelType?: string
+  modelName?: string
   systemPrompt: string
 }
 
@@ -25,7 +31,6 @@ const props = defineProps<{
   conversations: Conversation[]
   selectedConversationId: string | null
   isLoggedIn: boolean
-  username: string | null
 }>()
 
 const emit = defineEmits<{
@@ -35,23 +40,55 @@ const emit = defineEmits<{
   (e: 'agent-deleted', id: string): void
   (e: 'newChat'): void
   (e: 'createAgent'): void
-  (e: 'login'): void
-  (e: 'logout'): void
 }>()
 
-async function deleteAgent(id: string) {
+const keyword = ref('')
+
+const agentById = computed(() => new Map(props.agents.map(a => [a.id, a])))
+
+const filteredConversations = computed(() => {
+  const k = keyword.value.trim().toLowerCase()
+  return k ? props.conversations.filter(c => c.title.toLowerCase().includes(k)) : props.conversations
+})
+
+const filteredAgents = computed(() => {
+  const k = keyword.value.trim().toLowerCase()
+  return k ? props.agents.filter(a => a.name.toLowerCase().includes(k)) : props.agents
+})
+
+async function deleteAgent(agent: Agent) {
   try {
-    await agentApi.deleteAgent(id)
-    emit('agent-deleted', id)
+    await ElMessageBox.confirm(`确认删除智能体「${agent.name}」？`, '删除智能体', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      confirmButtonClass: 'el-button--danger',
+    })
+  } catch {
+    return
+  }
+  try {
+    await agentApi.deleteAgent(agent.id)
+    emit('agent-deleted', agent.id)
   } catch (e) {
     console.error(e)
   }
 }
 
-async function deleteConversation(id: string) {
+async function deleteConversation(conv: Conversation) {
   try {
-    await chatApi.deleteConversation(id)
-    emit('conversation-deleted', id)
+    await ElMessageBox.confirm(`确认删除对话「${conv.title}」？删除后历史消息不可恢复。`, '删除对话', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      confirmButtonClass: 'el-button--danger',
+    })
+  } catch {
+    return
+  }
+  try {
+    await chatApi.deleteConversation(conv.id)
+    emit('conversation-deleted', conv.id)
   } catch (e) {
     console.error(e)
   }
@@ -59,290 +96,215 @@ async function deleteConversation(id: string) {
 </script>
 
 <template>
-  <aside class="sidebar">
-    <div class="sidebar-header">
-      <span class="logo-text">🤖 AgentChat</span>
-    </div>
-
-    <!-- New Chat Button -->
-    <button class="btn-new-chat" @click="emit('newChat')">
-      <span class="icon">✏️</span> 新建对话
-    </button>
-
-    <!-- Tabs -->
-    <div class="sidebar-tabs">
-      <button
-        :class="['tab', sidebarTab === 'conversations' && 'active']"
-        @click="emit('update:sidebarTab', 'conversations')"
-      >对话</button>
-      <button
-        :class="['tab', sidebarTab === 'agents' && 'active']"
-        @click="emit('update:sidebarTab', 'agents')"
-      >Agent</button>
-    </div>
-
-    <!-- Conversations List -->
-    <div v-if="sidebarTab === 'conversations'" class="list-container">
-      <div v-if="conversations.length === 0" class="empty-hint">暂无对话，点击「新建对话」开始</div>
-      <div
-        v-for="conv in conversations"
-        :key="conv.id"
-        :class="['list-item', selectedConversationId === conv.id && 'active']"
-        @click="emit('selectConversation', conv)"
+  <aside class="panel" :aria-label="sidebarTab === 'conversations' ? '对话列表' : '智能体列表'">
+    <div class="panel-header">
+      <el-segmented
+        :model-value="sidebarTab"
+        :options="[
+          { label: '对话', value: 'conversations' },
+          { label: '智能体', value: 'agents' },
+        ]"
+        size="small"
+        @change="(v: any) => emit('update:sidebarTab', v)"
+      />
+      <el-button
+        v-if="sidebarTab === 'conversations'"
+        type="primary"
+        size="small"
+        @click="emit('newChat')"
       >
-        <span class="item-icon">💬</span>
-        <span class="item-title">{{ conv.title }}</span>
-        <button class="item-delete" @click.stop="deleteConversation(conv.id)" title="删除">✕</button>
-      </div>
+        <Plus :size="14" :stroke-width="2" /><span class="btn-label">新建</span>
+      </el-button>
+      <el-button v-else type="primary" size="small" @click="emit('createAgent')">
+        <Plus :size="14" :stroke-width="2" /><span class="btn-label">创建</span>
+      </el-button>
     </div>
 
-    <!-- Agents List -->
-    <div v-if="sidebarTab === 'agents'" class="list-container">
-      <button class="btn-create-agent" @click="emit('createAgent')">+ 创建 Agent</button>
-      <div v-if="agents.length === 0" class="empty-hint">暂无 Agent</div>
-      <div
-        v-for="agent in agents"
-        :key="agent.id"
-        class="list-item agent-item"
+    <div class="panel-search">
+      <el-input
+        v-model="keyword"
+        :placeholder="sidebarTab === 'conversations' ? '搜索对话' : '搜索智能体'"
+        clearable
+        aria-label="搜索"
       >
-        <span class="item-icon">🧠</span>
-        <div class="agent-info">
-          <span class="item-title">{{ agent.name }}</span>
-          <span class="agent-model">{{ agent.model }}</span>
-        </div>
-        <button class="item-delete" @click.stop="deleteAgent(agent.id)" title="删除">✕</button>
-      </div>
+        <template #prefix><Search :size="16" :stroke-width="1.75" /></template>
+      </el-input>
     </div>
 
-    <!-- 数据源与知识库管理入口（仅登录可见） -->
-    <div v-if="isLoggedIn" class="sidebar-nav">
-      <button class="btn-nav-ds" @click="router.push('/datasources')" style="margin-bottom: 4px;">
-        <span class="item-icon">🗄️</span>
-        <span class="item-title">数据源管理</span>
-      </button>
-      <button class="btn-nav-ds" @click="router.push('/knowledge')">
-        <span class="item-icon">📚</span>
-        <span class="item-title">知识库管理</span>
-      </button>
-    </div>
+    <div class="panel-list">
+      <!-- 未登录 -->
+      <div v-if="!isLoggedIn" class="panel-empty">登录后查看你的对话与智能体</div>
 
-    <!-- User Card -->
-    <div class="sidebar-user">
-      <div v-if="isLoggedIn" class="user-card">
-        <div class="user-avatar">👤</div>
-        <div class="user-info">
-          <div class="username">{{ username }}</div>
-          <div class="logout-link" @click="emit('logout')">退出登录</div>
+      <!-- 对话列表 -->
+      <template v-else-if="sidebarTab === 'conversations'">
+        <div v-if="filteredConversations.length === 0" class="panel-empty">
+          {{ keyword ? '没有匹配的对话' : '暂无对话，点击「新建」开始' }}
         </div>
-      </div>
-      <button v-else class="btn-login-trigger" @click="emit('login')">
-        登录以同步数据
-      </button>
+        <div
+          v-for="conv in filteredConversations"
+          :key="conv.id"
+          :class="['list-item', { active: selectedConversationId === conv.id }]"
+          role="button"
+          tabindex="0"
+          @click="emit('selectConversation', conv)"
+          @keydown.enter="emit('selectConversation', conv)"
+        >
+          <MessageSquare class="item-icon" :size="16" :stroke-width="1.75" />
+          <div class="item-text">
+            <div class="item-title">{{ conv.title }}</div>
+            <div v-if="agentById.get(conv.agentId)" class="item-sub">
+              {{ agentById.get(conv.agentId)?.name }} · {{ agentById.get(conv.agentId)?.model }}
+            </div>
+          </div>
+          <button type="button" class="item-delete" aria-label="删除对话" @click.stop="deleteConversation(conv)">
+            <Trash2 :size="15" :stroke-width="1.75" />
+          </button>
+        </div>
+      </template>
+
+      <!-- 智能体列表 -->
+      <template v-else>
+        <div v-if="filteredAgents.length === 0" class="panel-empty">
+          {{ keyword ? '没有匹配的智能体' : '暂无智能体，点击「创建」开始' }}
+        </div>
+        <div v-for="agent in filteredAgents" :key="agent.id" class="list-item agent-item">
+          <div class="agent-avatar" aria-hidden="true"><Bot :size="16" :stroke-width="1.75" /></div>
+          <div class="item-text">
+            <div class="item-title">{{ agent.name }}</div>
+            <div class="item-sub">{{ [agent.modelType, agent.modelName || agent.model].filter(Boolean).join(" · ") }}</div>
+          </div>
+          <button type="button" class="item-delete" aria-label="删除智能体" @click.stop="deleteAgent(agent)">
+            <Trash2 :size="15" :stroke-width="1.75" />
+          </button>
+        </div>
+      </template>
     </div>
   </aside>
 </template>
 
 <style scoped>
-.sidebar {
-  width: 260px;
-  min-width: 260px;
-  background: #161616;
-  border-right: 1px solid #2a2a2a;
+.panel {
+  width: var(--app-panel-width);
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  background: var(--app-bg-surface);
+  border-right: 1px solid var(--app-border);
 }
 
-.sidebar-header {
-  padding: 20px 16px 12px;
-  border-bottom: 1px solid #2a2a2a;
-}
-
-.logo-text {
-  font-size: 18px;
-  font-weight: 700;
-  color: #fff;
-  letter-spacing: -0.3px;
-}
-
-.btn-new-chat {
-  margin: 12px 12px 8px;
-  padding: 10px 14px;
-  background: #4d6bfe;
-  color: #fff;
-  border: none;
-  border-radius: 10px;
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 500;
+.panel-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  transition: background 0.2s;
+  padding: 16px 16px 12px;
 }
-.btn-new-chat:hover { background: #3a56e8; }
-
-.sidebar-tabs {
-  display: flex;
-  padding: 0 12px;
+.panel-header .el-button :deep(span) {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
-  margin-bottom: 8px;
 }
-.tab {
-  flex: 1;
-  padding: 7px 0;
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  color: #888;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.tab.active {
-  background: #252525;
-  color: #fff;
-  font-weight: 500;
-}
-.tab:hover:not(.active) { color: #ccc; }
 
-.list-container {
+.panel-search {
+  padding: 0 16px 12px;
+}
+
+.panel-list {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 8px;
+  padding: 0 8px 12px;
 }
-.list-container::-webkit-scrollbar { width: 4px; }
-.list-container::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
 
-.empty-hint {
-  color: #555;
-  font-size: 13px;
+.panel-empty {
+  padding: 32px 16px;
   text-align: center;
-  padding: 24px 12px;
-  line-height: 1.6;
+  font-size: var(--app-font-size-sm);
+  color: var(--app-text-tertiary);
 }
-.empty-hint a { color: #4d6bfe; text-decoration: none; }
-
-.btn-create-agent {
-  width: 100%;
-  padding: 9px;
-  background: transparent;
-  border: 1px dashed #333;
-  border-radius: 8px;
-  color: #888;
-  font-size: 13px;
-  cursor: pointer;
-  margin-bottom: 8px;
-  transition: all 0.2s;
-}
-.btn-create-agent:hover { border-color: #4d6bfe; color: #4d6bfe; }
 
 .list-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s;
-  position: relative;
+  gap: 10px;
+  padding: 10px 12px;
   margin-bottom: 2px;
+  border-radius: var(--app-radius);
+  cursor: pointer;
+  outline: none;
 }
-.list-item:hover { background: #1f1f1f; }
-.list-item.active { background: #252535; }
+.list-item:hover,
+.list-item:focus-visible {
+  background: var(--app-bg-hover);
+}
+.list-item.active {
+  background: var(--app-primary-soft);
+}
+.list-item.active .item-icon {
+  color: var(--app-primary);
+}
+.agent-item {
+  cursor: default;
+}
 
-.item-icon { font-size: 15px; flex-shrink: 0; }
-.item-title {
+.item-icon {
+  flex-shrink: 0;
+  color: var(--app-text-tertiary);
+}
+.agent-avatar {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--app-radius);
+  background: var(--app-bg-muted);
+  color: var(--app-text-regular);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.item-text {
   flex: 1;
-  font-size: 13px;
-  color: #ccc;
+  min-width: 0;
+}
+.item-title {
+  font-size: var(--app-font-size-base);
+  color: var(--app-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.list-item.active .item-title { color: #fff; }
+.list-item.active .item-title {
+  font-weight: 500;
+}
+.item-sub {
+  margin-top: 2px;
+  font-size: var(--app-font-size-xs);
+  color: var(--app-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .item-delete {
-  display: none;
-  background: transparent;
-  border: none;
-  color: #666;
-  cursor: pointer;
-  font-size: 12px;
-  padding: 2px 4px;
-  border-radius: 4px;
+  visibility: hidden;
   flex-shrink: 0;
-}
-.list-item:hover .item-delete { display: block; }
-.item-delete:hover { color: #ff5555; background: #2a1a1a; }
-
-.agent-item { align-items: flex-start; }
-.agent-info { flex: 1; overflow: hidden; }
-.agent-model { font-size: 11px; color: #555; margin-top: 2px; }
-
-/* User Card */
-.sidebar-user {
-  padding: 16px;
-  border-top: 1px solid #2a2a2a;
-  background: #161616;
-}
-.user-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.user-avatar {
-  width: 36px;
-  height: 36px;
-  background: #4d6bfe;
-  border-radius: 50%;
-  display: flex;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  border-radius: var(--app-radius-sm);
+  color: var(--app-text-tertiary);
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-}
-.user-info { flex: 1; }
-.username {
-  font-size: 14px;
-  font-weight: 600;
-  color: #fff;
-}
-.logout-link {
-  font-size: 12px;
-  color: #666;
   cursor: pointer;
-  margin-top: 2px;
-  transition: color 0.2s;
 }
-.logout-link:hover { color: #ff5555; }
-.btn-login-trigger {
-  width: 100%;
-  padding: 10px;
-  background: #252525;
-  border: 1px solid #333;
-  border-radius: 8px;
-  color: #ccc;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s;
+.list-item:hover .item-delete,
+.list-item:focus-within .item-delete {
+  visibility: visible;
 }
-.btn-login-trigger:hover { background: #333; color: #fff; }
-
-/* 数据源管理入口 */
-.sidebar-nav { padding: 4px 8px 8px; }
-.btn-nav-ds {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 10px;
-  background: transparent;
-  border: none;
-  border-radius: 8px;
-  color: #ccc;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.15s;
+.item-delete:hover {
+  color: var(--app-danger);
+  background: var(--app-danger-soft);
 }
-.btn-nav-ds:hover { background: #1f1f1f; color: #fff; }
 </style>

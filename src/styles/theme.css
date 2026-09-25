@@ -1,0 +1,153 @@
+/*
+ * AgentScope 设计变量（Design Tokens）
+ *
+ * - 所有页面与组件只引用这里的 --app-* 变量，禁止在组件中写死颜色；
+ * - 浅色为默认主题，<html class="dark"> 时切换为深色；
+ * - 主色与语义色的各级深浅（--el-color-*-light-N / dark-2）由 stores/theme.ts 按当前模式计算后写入，
+ *   这里只给出首屏默认值，保证脚本执行前页面也不会出现错色。
+ */
+
+:root {
+  /* ── 字体 ─────────────────────────────────────── */
+  --app-font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', sans-serif;
+  --app-font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+
+  --app-font-size-xs: 12px;
+  --app-font-size-sm: 13px;
+  --app-font-size-base: 14px;
+  --app-font-size-md: 16px;
+  --app-font-size-lg: 20px;
+  --app-font-size-xl: 24px;
+
+  /* ── 间距（4px 栅格）与圆角 ──────────────────────── */
+  --app-space-1: 4px;
+  --app-space-2: 8px;
+  --app-space-3: 12px;
+  --app-space-4: 16px;
+  --app-space-5: 20px;
+  --app-space-6: 24px;
+  --app-space-8: 32px;
+
+  --app-radius-sm: 4px;
+  --app-radius: 6px;
+  --app-radius-lg: 8px;
+
+  /* ── 布局尺寸 ─────────────────────────────────── */
+  --app-nav-width: 224px;
+  --app-panel-width: 288px;
+  --app-header-height: 56px;
+
+  /* ── 中性色（浅色） ───────────────────────────── */
+  --app-bg-page: #f5f6f8;
+  --app-bg-surface: #ffffff;
+  --app-bg-subtle: #f9fafb;
+  --app-bg-muted: #f2f4f7;
+  --app-bg-hover: #f2f4f7;
+  --app-border: #e4e7ec;
+  --app-border-strong: #d0d5dd;
+
+  --app-text-primary: #101828;
+  --app-text-regular: #344054;
+  --app-text-secondary: #475467;
+  --app-text-tertiary: #667085;
+  --app-text-disabled: #98a2b3;
+  --app-text-inverse: #ffffff;
+
+  /* ── 主色与语义色（引用 Element Plus 变量，保持单一来源） ── */
+  --app-primary: var(--el-color-primary);
+  --app-primary-hover: var(--el-color-primary-dark-2);
+  --app-primary-soft: var(--el-color-primary-light-9);
+  --app-primary-border: var(--el-color-primary-light-7);
+
+  --app-success: var(--el-color-success);
+  --app-success-soft: var(--el-color-success-light-9);
+  --app-warning: var(--el-color-warning);
+  --app-warning-soft: var(--el-color-warning-light-9);
+  --app-danger: var(--el-color-danger);
+  --app-danger-soft: var(--el-color-danger-light-9);
+
+  /* ── 代码块（两种主题下都保持深色，与 highlight.js github-dark 配套） ── */
+  --app-code-bg: #0f172a;
+  --app-code-border: #1e293b;
+  --app-code-text: #e2e8f0;
+  --app-inline-code-bg: #f2f4f7;
+  --app-inline-code-text: #b42318;
+
+  --app-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --app-shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+
+  /* ── 映射到 Element Plus ─────────────────────── */
+  --el-font-family: var(--app-font-family);
+  --el-font-size-base: var(--app-font-size-base);
+  --el-border-radius-base: var(--app-radius);
+  --el-border-radius-small: var(--app-radius-sm);
+  --el-component-size: 36px;
+  --el-component-size-small: 28px;
+  --el-component-size-large: 40px;
+
+  --el-color-primary: #1d4ed8;
+  --el-color-success: #067647;
+  --el-color-warning: #b54708;
+  --el-color-danger: #b42318;
+  --el-color-error: #b42318;
+  --el-color-info: #475467;
+
+  --el-bg-color-page: var(--app-bg-page);
+  --el-bg-color: var(--app-bg-surface);
+  --el-bg-color-overlay: var(--app-bg-surface);
+  --el-fill-color-light: var(--app-bg-subtle);
+  --el-fill-color-lighter: var(--app-bg-subtle);
+  --el-fill-color: var(--app-bg-muted);
+
+  --el-text-color-primary: var(--app-text-primary);
+  --el-text-color-regular: var(--app-text-regular);
+  --el-text-color-secondary: var(--app-text-tertiary);
+  --el-text-color-placeholder: var(--app-text-disabled);
+  --el-text-color-disabled: var(--app-text-disabled);
+
+  --el-border-color: var(--app-border-strong);
+  --el-border-color-light: var(--app-border);
+  --el-border-color-lighter: var(--app-border);
+  --el-border-color-extra-light: var(--app-bg-muted);
+
+  color-scheme: light;
+}
+
+/* ── 深色主题 ───────────────────────────────────── */
+html.dark {
+  --app-bg-page: #0c0e12;
+  --app-bg-surface: #151821;
+  --app-bg-subtle: #1a1e28;
+  --app-bg-muted: #222733;
+  --app-bg-hover: #222733;
+  --app-border: #2a303d;
+  --app-border-strong: #3a4252;
+
+  --app-text-primary: #f2f4f7;
+  --app-text-regular: #d0d5dd;
+  --app-text-secondary: #a4acb9;
+  --app-text-tertiary: #8a94a6;
+  --app-text-disabled: #5d6679;
+
+  --app-inline-code-bg: #222733;
+  --app-inline-code-text: #fda29b;
+
+  --app-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --app-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+
+  --el-color-primary: #528bff;
+  --el-color-success: #47cd89;
+  --el-color-warning: #fdb022;
+  --el-color-danger: #f97066;
+  --el-color-error: #f97066;
+  --el-color-info: #a4acb9;
+
+  --el-bg-color-page: var(--app-bg-page);
+  --el-bg-color: var(--app-bg-surface);
+  --el-bg-color-overlay: var(--app-bg-subtle);
+  --el-fill-color-blank: var(--app-bg-surface);
+  --el-mask-color: rgba(0, 0, 0, 0.7);
+
+  color-scheme: dark;
+}
