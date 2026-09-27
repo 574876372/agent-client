@@ -13,6 +13,7 @@ import {
 } from '@/utils/sse'
 import GenericApprovalCard from './GenericApprovalCard.vue'
 import SqlResultTable from './SqlResultTable.vue'
+import RetrievalSources from './RetrievalSources.vue'
 import {
   Bot,
   Brain,
@@ -345,6 +346,13 @@ function appendSseData(
     setTimeout(() => { toolCallingName.value = '' }, 800)
     return
   }
+  if (eventType === 'retrieval') {
+    // 检索来源为单行 JSON，一次性到达
+    streamBuffers.retrieval += piece
+    applyStreamContent(msgIdx)
+    scrollToBottom()
+    return
+  }
   if (eventType === 'error') {
     toolCallingName.value = ''
     streamBuffers.message += (streamBuffers.message ? '\n\n' : '') + `[错误] ${dataStr}`
@@ -626,6 +634,9 @@ onBeforeUnmount(() => {
                   <template v-for="(segment, segIdx) in parseMessageContent(msg.content)" :key="segIdx">
                     <!-- 普通文本段落 -->
                     <div v-if="segment.type === 'text'" class="bubble-text markdown-body" v-html="renderMarkdown(segment.content)"></div>
+
+                    <!-- 知识库引用来源（GENERIC 前置检索） -->
+                    <RetrievalSources v-else-if="segment.type === 'retrieval'" :json="segment.content" />
 
                     <!-- SQL Agent/Generic HITL: PENDING_APPROVAL 审批卡片 -->
                     <template v-else-if="segment.type === 'observation' && parseSqlPayload(segment.content)?.kind === 'pending'">

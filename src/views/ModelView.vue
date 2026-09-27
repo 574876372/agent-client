@@ -21,7 +21,18 @@ const modelFilterOptions = [
   { label: '全部', value: 'ALL' },
   { label: '对话模型', value: 'CHAT' },
   { label: '向量模型', value: 'EMBEDDING' },
+  { label: '重排模型', value: 'RERANK' },
 ]
+
+/** 模型类型在列表中的简称 */
+const MODEL_TYPE_SHORT: Record<string, string> = { CHAT: '对话', EMBEDDING: '向量', RERANK: '重排' }
+
+/** 模型名称输入框的示例 */
+const MODEL_NAME_PLACEHOLDER: Record<string, string> = {
+  CHAT: '例如：qwen-plus',
+  EMBEDDING: '例如：text-embedding-v3',
+  RERANK: '例如：BAAI/bge-reranker-v2-m3（Cohere / Jina 兼容 /rerank 接口）'
+}
 
 const filteredModels = computed(() =>
   modelFilter.value === 'ALL' ? models.value : models.value.filter(m => m.modelType === modelFilter.value),
@@ -171,7 +182,7 @@ function openCreateModel() {
   editingModel.value = null
   Object.assign(modelForm, {
     providerId: providers.value[0]?.id ?? '',
-    modelType: modelFilter.value === 'EMBEDDING' ? 'EMBEDDING' : 'CHAT',
+    modelType: modelFilter.value === 'ALL' ? 'CHAT' : modelFilter.value,
     modelName: '',
     dimensions: undefined,
     sendDimensions: 0,
@@ -279,7 +290,7 @@ onMounted(loadAll)
       <div class="page-title-row">
         <div class="page-title-text">
           <h1 class="page-title">模型管理</h1>
-          <p class="page-desc">维护模型厂商的接口地址与密钥，以及对话模型、向量模型。修改后立即生效，无需重启。</p>
+          <p class="page-desc">维护模型厂商的接口地址与密钥，以及对话模型、向量模型、重排模型。修改后立即生效，无需重启。设为默认的重排模型会用于所有未单独指定的智能体。</p>
         </div>
       </div>
 
@@ -343,7 +354,7 @@ onMounted(loadAll)
             </template>
           </el-table-column>
           <el-table-column label="类型" width="90">
-            <template #default="{ row }">{{ row.modelType === 'CHAT' ? '对话' : '向量' }}</template>
+            <template #default="{ row }">{{ MODEL_TYPE_SHORT[row.modelType] ?? row.modelType }}</template>
           </el-table-column>
           <el-table-column label="厂商" prop="providerName" min-width="110" />
           <el-table-column label="维度" width="90">
@@ -436,13 +447,14 @@ onMounted(loadAll)
           <el-radio-group v-model="modelForm.modelType" :disabled="modelLocked">
             <el-radio-button value="CHAT">对话模型</el-radio-button>
             <el-radio-button value="EMBEDDING">向量模型</el-radio-button>
+            <el-radio-button value="RERANK">重排模型</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="模型名称" prop="modelName">
           <el-input
             v-model="modelForm.modelName"
             :disabled="modelLocked"
-            :placeholder="modelForm.modelType === 'EMBEDDING' ? '例如：text-embedding-v3' : '例如：qwen-plus'"
+            :placeholder="MODEL_NAME_PLACEHOLDER[modelForm.modelType]"
           />
         </el-form-item>
         <template v-if="modelForm.modelType === 'EMBEDDING'">

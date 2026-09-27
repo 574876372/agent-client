@@ -23,6 +23,14 @@ describe('sse utils', () => {
     )
   })
 
+  it('recognizes the retrieval event and prefixes the retrieval block', () => {
+    expect(parseSseEventLine('event: retrieval')).toBe('retrieval')
+    const buf = createStreamBuffers()
+    buf.retrieval = '{"segments":[]}'
+    buf.message = 'Hi'
+    expect(mergeStreamContent(buf)).toBe('<retrieval>{"segments":[]}</retrieval>Hi')
+  })
+
   it('appendToolResult parses JSON', () => {
     const next = appendToolResult('', '{"tool":"weather","output":"sunny"}')
     expect(next).toBe('Action: weather\nObservation: sunny\n')

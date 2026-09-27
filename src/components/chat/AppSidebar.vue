@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { Plus, Search, Trash2, Bot, MessageSquare } from 'lucide-vue-next'
+import { Plus, Search, Trash2, Bot, MessageSquare, Pencil } from 'lucide-vue-next'
 import { agentApi, chatApi } from '@/api/chat'
 
 /**
@@ -38,6 +38,7 @@ const emit = defineEmits<{
   (e: 'selectConversation', conv: Conversation): void
   (e: 'conversation-deleted', id: string): void
   (e: 'agent-deleted', id: string): void
+  (e: 'editAgent', agent: Agent): void
   (e: 'newChat'): void
   (e: 'createAgent'): void
 }>()
@@ -58,7 +59,7 @@ const filteredAgents = computed(() => {
 
 async function deleteAgent(agent: Agent) {
   try {
-    await ElMessageBox.confirm(`确认删除智能体「${agent.name}」？`, '删除智能体', {
+    await ElMessageBox.confirm(`确认删除智能体「${agent.name}」？与它的全部对话也会一并删除。`, '删除智能体', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消',
@@ -173,6 +174,9 @@ async function deleteConversation(conv: Conversation) {
             <div class="item-title">{{ agent.name }}</div>
             <div class="item-sub">{{ [agent.modelType, agent.modelName || agent.model].filter(Boolean).join(" · ") }}</div>
           </div>
+          <button type="button" class="item-delete item-edit" aria-label="编辑智能体" @click.stop="emit('editAgent', agent)">
+            <Pencil :size="15" :stroke-width="1.75" />
+          </button>
           <button type="button" class="item-delete" aria-label="删除智能体" @click.stop="deleteAgent(agent)">
             <Trash2 :size="15" :stroke-width="1.75" />
           </button>
@@ -306,5 +310,9 @@ async function deleteConversation(conv: Conversation) {
 .item-delete:hover {
   color: var(--app-danger);
   background: var(--app-danger-soft);
+}
+.item-edit:hover {
+  color: var(--app-primary);
+  background: var(--app-primary-soft);
 }
 </style>

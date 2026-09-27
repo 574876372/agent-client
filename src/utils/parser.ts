@@ -1,13 +1,24 @@
 export interface ParsedSegment {
-  type: 'think' | 'action' | 'observation' | 'text'
+  type: 'think' | 'action' | 'observation' | 'text' | 'retrieval'
   content: string
   title?: string
 }
 
-export function parseMessageContent(content: string): ParsedSegment[] {
-  if (!content) return []
-  
+/** 知识库检索来源块：<retrieval>{json}</retrieval>，由后端持久化在助手消息开头 */
+const RETRIEVAL_BLOCK = /<retrieval>([\s\S]*?)<\/retrieval>/g
+
+export function parseMessageContent(raw: string): ParsedSegment[] {
+  if (!raw) return []
+
   const segments: ParsedSegment[] = []
+  // 0. 先取出检索来源块，作为独立段落排在最前
+  let content = raw
+  if (raw.includes('<retrieval>')) {
+    for (const m of raw.matchAll(RETRIEVAL_BLOCK)) {
+      segments.push({ type: 'retrieval', content: m[1], title: '引用来源' })
+    }
+    content = raw.replace(RETRIEVAL_BLOCK, '')
+  }
   let currentIndex = 0
   
   // 1. 先进行 DeepSeek 风格 <think> 标签的提取

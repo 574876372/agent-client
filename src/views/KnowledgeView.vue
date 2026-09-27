@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, reactive, watch } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules, type UploadRequestOptions } from 'element-plus'
-import { Plus, BookOpen, Trash2, RefreshCw, UploadCloud, FileText, Search, Cpu } from 'lucide-vue-next'
+import { Plus, BookOpen, Trash2, RefreshCw, UploadCloud, FileText, Cpu, Settings2, Layers } from 'lucide-vue-next'
 import PageHeader from '@/components/layout/PageHeader.vue'
+import RetrievalPlayground from '@/components/knowledge/RetrievalPlayground.vue'
+import RagEvalPanel from '@/components/knowledge/RagEvalPanel.vue'
 import { knowledgeApi } from '@/api/chat'
 import { modelApi, type ModelInfoResponse } from '@/api/model'
 
@@ -14,7 +16,30 @@ interface KbResponse {
   userId: string
   embeddingModelId?: string
   embeddingModelName?: string
+  kbType?: string
+  kbTypeLabel?: string
+  chunkStrategy?: string | null
+  chunkSize?: number | null
+  chunkOverlap?: number | null
+  contextWindow?: number | null
+  effectiveChunkStrategy?: string
+  effectiveChunkSize?: number
+  effectiveChunkOverlap?: number
+  effectiveContextWindow?: number
   createTime: string
+}
+
+/** 知识库类型预设（后端 /knowledge-base/types） */
+interface KbTypeOption {
+  code: string
+  label: string
+  chunkStrategy: string
+  chunkStrategyLabel: string
+  chunkSize: number
+  chunkOverlap: number
+  contextWindow: number
+  wholeSection: boolean
+  description: string
 }
 
 interface UploadDocResponse {
@@ -30,15 +55,6 @@ interface UploadDocResponse {
   createTime: string
 }
 
-interface SearchChunkResponse {
-  chunkId: string
-  content: string
-  score: number
-  docId: string
-  docName: string
-  chunkIndex: number
-}
-
 const ACCEPT_TYPES = '.pdf,.txt,.md,.docx,.doc,.xlsx,.xls,.xml,.pptx,.ppt'
 
 /** 文档处于上传 / 解析中时，每隔该间隔自动刷新一次列表 */
@@ -51,46 +67,73 @@ const docs = ref<UploadDocResponse[]>([])
 // Loading states
 const kbsLoading = ref(false)
 const docsLoading = ref(false)
-const searchLoading = ref(false)
 const uploadingCount = ref(0)
 
 // Tab state
-const activeTab = ref<'docs' | 'playground'>('docs')
-
-// Playground search states
-const searchQuery = ref('')
-const searchLimit = ref(3)
-const searchResults = ref<SearchChunkResponse[]>([])
-const searched = ref(false)
+const activeTab = ref<'docs' | 'playground' | 'eval'>('docs')
 
 function errMsg(e: any) {
   return e?.response?.data?.message ?? e?.message ?? '未知错误'
 }
 
-// ─── 创建知识库 ─────────────────────────────────────────────────────────────
+// ─── 知识库类型预设 ─────────────────────────────────────────────────────────
+
+const kbTypes = ref<KbTypeOption[]>([])
+const typeByCode = computed(() => new Map(kbTypes.value.map(t => [t.code, t])))
+
+async function loadKbTypes() {
+  try {
+    const res = await knowledgeApi.listTypes()
+    kbTypes.value = res.data ?? []
+  } catch (e) {
+    console.error('加载知识库类型失败:', e)
+  }
+}
+
+// ─── 创建 / 编辑知识库（同一弹窗） ──────────────────────────────────────────
 
 const showCreateModal = ref(false)
+/** 弹窗模式：create=新建 / edit=编辑当前知识库 */
+const kbDialogMode = ref<'create' | 'edit'>('create')
 const createFormRef = ref<FormInstance>()
 const creating = ref(false)
+const showAdvanced = ref(false)
 const newKb = reactive({
   name: '',
   description: '',
-  embeddingModelId: ''
+  embeddingModelId: '',
+  kbType: 'GENERAL',
+  /** 以下参数为 null 时使用类型预设 */
+  chunkSize: null as number | null,
+  chunkOverlap: null as number | null,
+  contextWindow: null as number | null
 })
 const createRules: FormRules = {
   name: [{ required: true, message: '请输入知识库名称', trigger: 'blur' }],
   embeddingModelId: [{ required: true, message: '请选择向量模型', trigger: 'change' }],
 }
 
+/** 当前选中类型的预设，用于参数输入框的占位提示 */
+const selectedType = computed(() => typeByCode.value.get(newKb.kbType))
+
 // 可绑定的向量模型（已启用），打开创建弹窗时加载，默认选中默认模型
 const embeddingModels = ref<ModelInfoResponse[]>([])
 
 async function openCreateModal() {
-  newKb.name = ''
-  newKb.description = ''
-  newKb.embeddingModelId = ''
+  kbDialogMode.value = 'create'
+  Object.assign(newKb, {
+    name: '',
+    description: '',
+    embeddingModelId: '',
+    kbType: 'GENERAL',
+    chunkSize: null,
+    chunkOverlap: null,
+    contextWindow: null
+  })
+  showAdvanced.value = false
   showCreateModal.value = true
   createFormRef.value?.clearValidate()
+  if (kbTypes.value.length === 0) loadKbTypes()
   try {
     const res = await modelApi.listModels('EMBEDDING')
     embeddingModels.value = (res.data ?? []).filter(m => m.enabled === 1)
@@ -101,14 +144,46 @@ async function openCreateModal() {
   }
 }
 
+function openEditModal(kb: KbResponse) {
+  kbDialogMode.value = 'edit'
+  Object.assign(newKb, {
+    name: kb.name,
+    description: kb.description ?? '',
+    embeddingModelId: kb.embeddingModelId ?? '',
+    kbType: kb.kbType || 'GENERAL',
+    chunkSize: kb.chunkSize ?? null,
+    chunkOverlap: kb.chunkOverlap ?? null,
+    contextWindow: kb.contextWindow ?? null
+  })
+  showAdvanced.value = kb.chunkSize != null || kb.chunkOverlap != null || kb.contextWindow != null
+  showCreateModal.value = true
+  createFormRef.value?.clearValidate()
+  if (kbTypes.value.length === 0) loadKbTypes()
+}
+
+/** 请求体中的类型与切片参数；未展开高级设置时一律使用类型预设 */
+function kbConfigPayload() {
+  return {
+    kbType: newKb.kbType,
+    chunkSize: showAdvanced.value ? newKb.chunkSize : null,
+    chunkOverlap: showAdvanced.value ? newKb.chunkOverlap : null,
+    contextWindow: showAdvanced.value ? newKb.contextWindow : null
+  }
+}
+
 async function handleCreateKb() {
+  if (kbDialogMode.value === 'edit') {
+    await handleUpdateKb()
+    return
+  }
   if (!(await createFormRef.value?.validate().catch(() => false))) return
   creating.value = true
   try {
     const res = await knowledgeApi.createKb({
       name: newKb.name.trim(),
       description: newKb.description.trim(),
-      embeddingModelId: newKb.embeddingModelId || undefined
+      embeddingModelId: newKb.embeddingModelId || undefined,
+      ...kbConfigPayload()
     })
     showCreateModal.value = false
     ElMessage.success('知识库已创建')
@@ -121,6 +196,88 @@ async function handleCreateKb() {
     ElMessage.error('创建知识库失败：' + errMsg(e))
   } finally {
     creating.value = false
+  }
+}
+
+/** 保存编辑；切片参数变化且已有文档时，询问是否立即重新解析 */
+async function handleUpdateKb() {
+  const kb = selectedKb.value
+  if (!kb || !newKb.name.trim()) return
+  creating.value = true
+  try {
+    const res = await knowledgeApi.updateKb(kb.id, {
+      name: newKb.name.trim(),
+      description: newKb.description.trim(),
+      ...kbConfigPayload()
+    })
+    const updated: KbResponse = res.data
+    showCreateModal.value = false
+    ElMessage.success('知识库设置已保存')
+    const chunkingChanged =
+      updated.effectiveChunkStrategy !== kb.effectiveChunkStrategy ||
+      updated.effectiveChunkSize !== kb.effectiveChunkSize ||
+      updated.effectiveChunkOverlap !== kb.effectiveChunkOverlap ||
+      updated.kbType !== kb.kbType
+    await loadKbs()
+    selectedKb.value = kbs.value.find(k => k.id === kb.id) ?? updated
+    if (chunkingChanged && docs.value.length > 0) {
+      try {
+        await ElMessageBox.confirm(
+          '切片参数已变更，只对之后上传的文档生效。是否立即按新配置重新解析全部已有文档？',
+          '重新解析',
+          { type: 'info', confirmButtonText: '重新解析', cancelButtonText: '稍后' }
+        )
+        await reparseAll(true)
+      } catch {
+        // 用户选择稍后
+      }
+    }
+  } catch (e: any) {
+    ElMessage.error('保存失败：' + errMsg(e))
+  } finally {
+    creating.value = false
+  }
+}
+
+// ─── 重新解析 ───────────────────────────────────────────────────────────────
+
+/** 本轮重新解析涉及的文档数，用于显示进度；0 表示当前没有进行中的批量重新解析 */
+const reparseTotal = ref(0)
+const reparseDone = computed(() =>
+  reparseTotal.value === 0 ? 0 : docs.value.filter(d => d.status === 'indexed' || d.status === 'failed').length
+)
+
+async function reparseAll(skipConfirm = false) {
+  if (!selectedKb.value) return
+  if (!skipConfirm) {
+    try {
+      await ElMessageBox.confirm(
+        `按当前配置重新解析「${selectedKb.value.name}」的全部文档？解析期间这些文档暂时检索不到。`,
+        '重新解析',
+        { type: 'warning', confirmButtonText: '重新解析', cancelButtonText: '取消' }
+      )
+    } catch {
+      return
+    }
+  }
+  try {
+    const res = await knowledgeApi.reparseKb(selectedKb.value.id)
+    const submitted = res.data?.submitted ?? 0
+    reparseTotal.value = submitted > 0 ? docs.value.length : 0
+    ElMessage.success(submitted > 0 ? `已提交 ${submitted} 个文档重新解析` : '没有可重新解析的文档')
+    await loadDocs(true)
+  } catch (e: any) {
+    ElMessage.error('重新解析失败：' + errMsg(e))
+  }
+}
+
+async function reparseDoc(doc: UploadDocResponse) {
+  try {
+    await knowledgeApi.reparseDoc(doc.id)
+    ElMessage.success(`「${doc.name}」已开始重新解析`)
+    await loadDocs(true)
+  } catch (e: any) {
+    ElMessage.error('重新解析失败：' + errMsg(e))
   }
 }
 
@@ -143,9 +300,7 @@ async function loadKbs() {
 
 async function selectKb(kb: KbResponse) {
   selectedKb.value = kb
-  searchResults.value = []
-  searchQuery.value = ''
-  searched.value = false
+  reparseTotal.value = 0
   await loadDocs()
 }
 
@@ -219,20 +374,6 @@ async function handleDeleteDoc(doc: UploadDocResponse) {
   }
 }
 
-async function performPlaygroundSearch() {
-  if (!selectedKb.value || !searchQuery.value.trim()) return
-  searchLoading.value = true
-  try {
-    const res = await knowledgeApi.search(selectedKb.value.id, searchQuery.value.trim(), searchLimit.value)
-    searchResults.value = res.data ?? []
-    searched.value = true
-  } catch (e: any) {
-    ElMessage.error('检索失败：' + errMsg(e))
-  } finally {
-    searchLoading.value = false
-  }
-}
-
 // ─── 解析中文档自动刷新 ─────────────────────────────────────────────────────
 
 const hasPendingDocs = computed(() => docs.value.some(d => d.status === 'uploading' || d.status === 'parsing'))
@@ -249,6 +390,11 @@ watch(hasPendingDocs, (pending) => {
   stopPolling()
   if (pending) {
     pollTimer = setInterval(() => loadDocs(true), POLL_INTERVAL_MS)
+  } else if (reparseTotal.value > 0) {
+    // 批量重新解析全部完成
+    const failed = docs.value.filter(d => d.status === 'failed').length
+    ElMessage[failed > 0 ? 'warning' : 'success'](failed > 0 ? `重新解析完成，${failed} 个文档失败` : '重新解析完成')
+    reparseTotal.value = 0
   }
 })
 
@@ -275,7 +421,10 @@ function statusMeta(status: string) {
   return STATUS_META[status] ?? { label: status, type: 'info' as const }
 }
 
-onMounted(loadKbs)
+onMounted(() => {
+  loadKbs()
+  loadKbTypes()
+})
 </script>
 
 <template>
@@ -324,15 +473,27 @@ onMounted(loadKbs)
             <div class="kb-detail-info">
               <h1 class="kb-detail-name">{{ selectedKb.name }}</h1>
               <p class="kb-detail-desc">{{ selectedKb.description || '暂无描述' }}</p>
-              <div v-if="selectedKb.embeddingModelName" class="kb-detail-meta">
-                <Cpu :size="14" :stroke-width="1.75" />
-                <span>向量模型</span>
-                <span class="mono">{{ selectedKb.embeddingModelName }}</span>
+              <div class="kb-detail-meta">
+                <template v-if="selectedKb.embeddingModelName">
+                  <Cpu :size="14" :stroke-width="1.75" />
+                  <span>向量模型</span>
+                  <span class="mono">{{ selectedKb.embeddingModelName }}</span>
+                  <span class="meta-sep">·</span>
+                </template>
+                <Layers :size="14" :stroke-width="1.75" />
+                <span>{{ selectedKb.kbTypeLabel || '通用文档' }}</span>
+                <span class="meta-sep">·</span>
+                <span>切片 {{ selectedKb.effectiveChunkSize }} 字</span>
+                <span class="meta-sep">·</span>
+                <span>{{ selectedKb.effectiveContextWindow ? `命中后补前后各 ${selectedKb.effectiveContextWindow} 片` : '命中后不扩展' }}</span>
               </div>
             </div>
             <div class="kb-detail-actions">
               <el-button :loading="docsLoading" @click="loadDocs()">
                 <RefreshCw v-if="!docsLoading" :size="14" :stroke-width="1.75" /><span>刷新</span>
+              </el-button>
+              <el-button @click="openEditModal(selectedKb)">
+                <Settings2 :size="14" :stroke-width="1.75" /><span>设置</span>
               </el-button>
               <el-button type="danger" plain @click="handleDeleteKb(selectedKb)">
                 <Trash2 :size="14" :stroke-width="1.75" /><span>删除知识库</span>
@@ -358,6 +519,17 @@ onMounted(loadKbs)
                   <div v-if="uploadingCount > 0" class="uploader-progress">正在上传 {{ uploadingCount }} 个文件…</div>
                 </div>
               </el-upload>
+
+              <div v-if="docs.length > 0" class="docs-toolbar">
+                <span v-if="reparseTotal > 0" class="reparse-progress">
+                  重新解析中 {{ reparseDone }} / {{ reparseTotal }}
+                  <el-progress :percentage="Math.round((reparseDone / reparseTotal) * 100)" :stroke-width="6" :show-text="false" class="reparse-bar" />
+                </span>
+                <span class="spacer" />
+                <el-button size="small" :disabled="hasPendingDocs" @click="reparseAll()">
+                  <RefreshCw :size="13" :stroke-width="1.75" /><span>全部重新解析</span>
+                </el-button>
+              </div>
 
               <el-table :data="docs" v-loading="docsLoading" row-key="id" empty-text="暂无文档，请在上方上传" class="docs-table">
                 <el-table-column label="文件名" min-width="240">
@@ -385,53 +557,28 @@ onMounted(loadKbs)
                 <el-table-column label="切片数" width="90">
                   <template #default="{ row }">{{ row.chunkCount ?? '—' }}</template>
                 </el-table-column>
-                <el-table-column label="操作" width="80" align="right">
+                <el-table-column label="操作" width="130" align="right">
                   <template #default="{ row }">
+                    <el-button
+                      link
+                      type="primary"
+                      :disabled="row.status === 'uploading' || row.status === 'parsing'"
+                      @click="reparseDoc(row as UploadDocResponse)"
+                    >重新解析</el-button>
                     <el-button link type="danger" @click="handleDeleteDoc(row as UploadDocResponse)">删除</el-button>
                   </template>
                 </el-table-column>
               </el-table>
             </el-tab-pane>
 
-            <!-- 检索演练场 -->
-            <el-tab-pane label="检索演练" name="playground">
-              <p class="playground-hint">
-                输入一个问题，系统会用该知识库绑定的向量模型计算相似度，返回最匹配的切片与得分，用于检验切片与召回效果。
-              </p>
-              <div class="search-row">
-                <el-input
-                  v-model="searchQuery"
-                  placeholder="输入测试问题，例如：系统支持哪些数据源？"
-                  clearable
-                  @keyup.enter="performPlaygroundSearch"
-                >
-                  <template #prefix><Search :size="16" :stroke-width="1.75" /></template>
-                </el-input>
-                <el-select v-model="searchLimit" class="limit-select" aria-label="召回数量">
-                  <el-option v-for="n in [1, 3, 5, 10]" :key="n" :label="`Top ${n}`" :value="n" />
-                </el-select>
-                <el-button type="primary" :loading="searchLoading" :disabled="!searchQuery.trim()" @click="performPlaygroundSearch">
-                  检索
-                </el-button>
-              </div>
+            <!-- 检索演练场：与智能体相同的检索流水线，分步展示 -->
+            <el-tab-pane label="检索演练" name="playground" lazy>
+              <RetrievalPlayground :kbId="selectedKb.id" />
+            </el-tab-pane>
 
-              <el-empty v-if="!searchLoading && searchResults.length === 0" :image-size="64"
-                :description="searched ? '没有召回到相关切片' : '检索结果将显示在这里'" />
-
-              <div v-else class="results" v-loading="searchLoading">
-                <article v-for="(chunk, idx) in searchResults" :key="chunk.chunkId" class="result-card">
-                  <header class="result-head">
-                    <el-tag size="small" effect="plain">Top {{ idx + 1 }}</el-tag>
-                    <span class="result-score">相似度 <strong class="mono">{{ chunk.score.toFixed(4) }}</strong></span>
-                    <span class="result-spacer" />
-                    <span class="result-source">
-                      <FileText :size="14" :stroke-width="1.75" />
-                      {{ chunk.docName }} · 切片 #{{ chunk.chunkIndex }}
-                    </span>
-                  </header>
-                  <p class="result-text">{{ chunk.content }}</p>
-                </article>
-              </div>
+            <!-- 检索评估：问题 + 标准答案要点，统计召回率与完整度 -->
+            <el-tab-pane label="评估" name="eval" lazy>
+              <RagEvalPanel :kbId="selectedKb.id" />
             </el-tab-pane>
           </el-tabs>
         </template>
@@ -439,8 +586,13 @@ onMounted(loadKbs)
     </div>
 
     <!-- 创建知识库 -->
-    <el-dialog v-model="showCreateModal" title="新建知识库" width="520px" align-center>
-      <el-form ref="createFormRef" :model="newKb" :rules="createRules" label-position="top">
+    <el-dialog
+      v-model="showCreateModal"
+      :title="kbDialogMode === 'create' ? '新建知识库' : '知识库设置'"
+      width="600px"
+      align-center
+    >
+      <el-form ref="createFormRef" :model="newKb" :rules="createRules" label-position="top" class="kb-form">
         <el-form-item label="名称" prop="name">
           <el-input v-model="newKb.name" placeholder="例如：产品使用指南" maxlength="50" />
         </el-form-item>
@@ -452,7 +604,60 @@ onMounted(loadKbs)
             placeholder="例如：包含平台的核心功能、常见操作与故障排查"
           />
         </el-form-item>
-        <el-form-item label="向量模型" prop="embeddingModelId">
+        <el-form-item label="知识库类型">
+          <div class="type-cards" role="radiogroup" aria-label="知识库类型">
+            <button
+              v-for="t in kbTypes"
+              :key="t.code"
+              type="button"
+              role="radio"
+              :aria-checked="newKb.kbType === t.code"
+              :class="['type-card', { active: newKb.kbType === t.code }]"
+              @click="newKb.kbType = t.code"
+            >
+              <span class="type-name">{{ t.label }}</span>
+              <span class="type-desc">{{ t.description }}</span>
+            </button>
+          </div>
+          <div v-if="kbDialogMode === 'edit'" class="field-hint">切换类型或修改切片参数后，已入库文档需重新解析才会按新规则切片</div>
+        </el-form-item>
+
+        <el-form-item>
+          <el-checkbox v-model="showAdvanced">自定义切片与扩展参数（留空使用类型预设）</el-checkbox>
+        </el-form-item>
+        <div v-if="showAdvanced" class="advanced-grid">
+          <el-form-item label="切片大小（字）">
+            <el-input-number
+              v-model="newKb.chunkSize"
+              :min="100"
+              :max="4000"
+              :step="100"
+              :placeholder="`预设 ${selectedType?.chunkSize ?? ''}`"
+              controls-position="right"
+            />
+          </el-form-item>
+          <el-form-item label="超长段落重叠（字）">
+            <el-input-number
+              v-model="newKb.chunkOverlap"
+              :min="0"
+              :max="1000"
+              :step="10"
+              :placeholder="`预设 ${selectedType?.chunkOverlap ?? ''}`"
+              controls-position="right"
+            />
+          </el-form-item>
+          <el-form-item label="命中后补前后各 N 片">
+            <el-input-number
+              v-model="newKb.contextWindow"
+              :min="0"
+              :max="5"
+              :placeholder="`预设 ${selectedType?.contextWindow ?? ''}`"
+              controls-position="right"
+            />
+          </el-form-item>
+        </div>
+
+        <el-form-item v-if="kbDialogMode === 'create'" label="向量模型" prop="embeddingModelId">
           <el-select
             v-model="newKb.embeddingModelId"
             :placeholder="embeddingModels.length === 0 ? '暂无可用向量模型，请先在「模型管理」中添加' : '选择向量模型'"
@@ -470,7 +675,7 @@ onMounted(loadKbs)
       </el-form>
       <template #footer>
         <el-button @click="showCreateModal = false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="handleCreateKb">创建</el-button>
+        <el-button type="primary" :loading="creating" @click="handleCreateKb">{{ kbDialogMode === 'create' ? '创建' : '保存' }}</el-button>
       </template>
     </el-dialog>
   </div>
@@ -680,58 +885,80 @@ onMounted(loadKbs)
   color: var(--app-text-primary);
 }
 
-/* ── 检索演练 ─────────────────────────────────── */
-.playground-hint {
-  margin-bottom: 12px;
-  font-size: var(--app-font-size-sm);
-  color: var(--app-text-secondary);
+.meta-sep {
+  color: var(--app-border-strong);
 }
-.search-row {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.limit-select {
-  width: 110px;
-  flex-shrink: 0;
-}
-.results {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.result-card {
-  padding: 12px 14px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-lg);
-  background: var(--app-bg-surface);
-}
-.result-head {
+
+/* ── 文档工具栏与重新解析进度 ─────────────────── */
+.docs-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-  font-size: var(--app-font-size-xs);
-  color: var(--app-text-secondary);
+  gap: 12px;
+  margin: 12px 0 4px;
 }
-.result-score strong {
-  color: var(--app-text-primary);
-}
-.result-spacer {
-  flex: 1;
-}
-.result-source {
+.docs-toolbar :deep(.el-button > span) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+.spacer {
+  flex: 1;
+}
+.reparse-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--app-font-size-sm);
+  color: var(--app-text-secondary);
+}
+.reparse-bar {
+  width: 160px;
+}
+
+/* ── 知识库类型选择 ───────────────────────────── */
+.type-cards {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.type-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-lg);
+  background: var(--app-bg-surface);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.type-card:hover {
+  border-color: var(--app-border-strong);
+}
+.type-card.active {
+  border-color: var(--app-primary);
+  background: var(--app-primary-soft);
+}
+.type-name {
+  font-size: var(--app-font-size-base);
+  font-weight: 500;
+  color: var(--app-text-primary);
+}
+.type-desc {
+  font-size: var(--app-font-size-xs);
+  line-height: 1.5;
   color: var(--app-text-tertiary);
 }
-.result-text {
-  font-size: var(--app-font-size-base);
-  line-height: 1.7;
-  color: var(--app-text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
+.advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 12px;
+}
+.advanced-grid :deep(.el-input-number) {
+  width: 100%;
 }
 
 .field-hint {
@@ -741,10 +968,7 @@ onMounted(loadKbs)
   line-height: 1.5;
   color: var(--app-text-tertiary);
 }
-:deep(.el-select) {
+.kb-form :deep(.el-select) {
   width: 100%;
-}
-.search-row :deep(.el-select) {
-  width: 110px;
 }
 </style>

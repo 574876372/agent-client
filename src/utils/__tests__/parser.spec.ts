@@ -62,4 +62,13 @@ observation: Done.`
     expect(parseMessageContent('')).toEqual([])
     expect(parseMessageContent('   ')).toEqual([])
   })
+
+  it('extracts the persisted retrieval block as the first segment', () => {
+    const json = '{"query":"q","segments":[{"citation":1,"content":"<\\/retrieval> 原文"}]}'
+    const result = parseMessageContent(`<retrieval>${json}</retrieval><think>想</think>回答 [1]`)
+    expect(result[0]).toEqual({ type: 'retrieval', content: json, title: '引用来源' })
+    expect(result[1]).toEqual({ type: 'think', content: '想', title: '思考过程' })
+    expect(result[2]).toEqual({ type: 'text', content: '回答 [1]', title: undefined })
+    expect(JSON.parse(result[0].content).segments[0].content).toBe('</retrieval> 原文')
+  })
 })

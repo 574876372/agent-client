@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { computed, reactive, ref, onMounted } from 'vue'
+import { computed, reactive, ref, onMounted, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { agentApi, knowledgeApi } from '@/api/chat'
+import { modelApi, type ModelInfoResponse } from '@/api/model'
 import { History, Layers, Sparkles, Database, Wrench, Check } from 'lucide-vue-next'
 
 const props = defineProps<{
   show: boolean
+  /** 编辑模式下的智能体 ID；为空时为创建模式 */
+  agentId?: string | null
 }>()
 
 const emit = defineEmits<{
   (e: 'update:show', val: boolean): void
   (e: 'agent-created'): void
+  (e: 'agent-updated'): void
 }>()
 
 interface ToolInfo {
@@ -19,7 +24,16 @@ interface ToolInfo {
   icon: string
   category: string
   enabled: boolean
+  /** 创建时是否默认勾选（后端按 agent.tool.default-enabled 标记） */
+  defaultSelected?: boolean
 }
+
+/** 是否为编辑模式 */
+const isEdit = computed(() => !!props.agentId)
+/** 编辑模式下正在加载智能体详情 */
+const loadingDetail = ref(false)
+/** 提交中，防止重复点击 */
+const submitting = ref(false)
 
 const modelProviders = ref<{ type: string; models: string[] }[]>([])
 const availableTools = ref<ToolInfo[]>([])
@@ -39,9 +53,22 @@ const newAgent = reactive({
   // RAG configurations
   kbIds: [] as string[],
   ragMode: 'GENERIC' as 'DISABLED' | 'GENERIC' | 'AGENTIC',
-  recallLimit: 3,
-  scoreThreshold: 0.3
+  /** 最终交给模型的段数 Top-K */
+  recallLimit: 5,
+  /** 向量召回预过滤阈值 */
+  scoreThreshold: 0.3,
+  /** 是否结合对话历史改写检索词 */
+  queryRewrite: true,
+  /** 注入上下文总长上限（字） */
+  contextMaxChars: 20000,
+  /** 重排模型 ID，空串表示使用全局默认（未配置则不重排） */
+  rerankModelId: ''
 })
+
+/** 与后端 agent.rag.retrieval.* 默认值保持一致 */
+const DEFAULT_FINAL_TOP_K = 5
+const DEFAULT_SCORE_THRESHOLD = 0.3
+const DEFAULT_CONTEXT_MAX_CHARS = 20000
 
 const promptTemplates = [
   { name: '自定义', prompt: '' },
@@ -123,7 +150,8 @@ async function loadModelProviders() {
   try {
     const res = await agentApi.getModelProviders()
     modelProviders.value = res.data
-    if (modelProviders.value.length > 0) {
+    // 编辑模式下详情可能先于模型列表返回，已有选择时不覆盖
+    if (modelProviders.value.length > 0 && !newAgent.modelType) {
       newAgent.modelType = modelProviders.value[0].type
       newAgent.modelName = modelProviders.value[0].models[0]
     }
@@ -132,14 +160,32 @@ async function loadModelProviders() {
   }
 }
 
+/** 创建时默认勾选的工具：仅后端标记为 defaultSelected 的工具 */
+function defaultToolNames(): string[] {
+  return availableTools.value.filter(t => t.defaultSelected).map(t => t.toolName)
+}
+
 async function loadAvailableTools() {
   try {
     const res = await agentApi.getTools()
     availableTools.value = res.data || []
-    // 默认全选所有可用工具
-    newAgent.toolNames = availableTools.value.map(t => t.toolName)
+    if (!isEdit.value) {
+      newAgent.toolNames = defaultToolNames()
+    }
   } catch (e) {
     console.error('加载工具列表失败:', e)
+  }
+}
+
+/** 可选的重排模型（已启用的 RERANK 类型） */
+const rerankModels = ref<ModelInfoResponse[]>([])
+
+async function loadRerankModels() {
+  try {
+    const res = await modelApi.listModels('RERANK')
+    rerankModels.value = (res.data ?? []).filter(m => m.enabled === 1)
+  } catch (e) {
+    console.error('加载重排模型失败:', e)
   }
 }
 
@@ -152,66 +198,138 @@ async function loadKnowledgeBases() {
   }
 }
 
-async function createAgent() {
-  if (!newAgent.name.trim()) return
+/** 重置为创建模式的默认表单 */
+function resetForm() {
+  Object.assign(newAgent, {
+    name: '',
+    description: '',
+    modelType: modelProviders.value[0]?.type || '',
+    modelName: modelProviders.value[0]?.models[0] || '',
+    systemPrompt: '',
+    toolNames: defaultToolNames(),
+    memoryMode: 'SUMMARY',
+    maxTurns: null,
+    useCustomTurns: false,
+    customTurns: 10,
+    kbIds: [],
+    ragMode: 'GENERIC',
+    recallLimit: DEFAULT_FINAL_TOP_K,
+    scoreThreshold: DEFAULT_SCORE_THRESHOLD,
+    queryRewrite: true,
+    contextMaxChars: DEFAULT_CONTEXT_MAX_CHARS,
+    rerankModelId: ''
+  })
+}
+
+/** 编辑模式：拉取智能体详情并回填表单 */
+async function fillFromAgent(id: string) {
+  loadingDetail.value = true
   try {
-    await agentApi.createAgent({
-      name: newAgent.name,
-      description: newAgent.description,
-      modelType: newAgent.modelType,
-      modelName: newAgent.modelName,
-      systemPrompt: newAgent.systemPrompt,
-      toolNames: newAgent.toolNames,
-      memoryMode: newAgent.memoryMode,
-      maxTurns: newAgent.memoryMode === 'FULL' ? null : (newAgent.useCustomTurns ? newAgent.customTurns : null),
-      
-      // RAG properties
-      kbIds: newAgent.kbIds,
-      ragMode: newAgent.kbIds.length > 0 ? newAgent.ragMode : 'DISABLED',
-      recallLimit: newAgent.kbIds.length > 0 ? newAgent.recallLimit : null,
-      scoreThreshold: newAgent.kbIds.length > 0 ? newAgent.scoreThreshold : null
-    })
-    emit('agent-created')
-    emit('update:show', false)
-    // 重置表单
+    const { data } = await agentApi.getAgent(id)
     Object.assign(newAgent, {
-      name: '',
-      description: '',
-      modelType: modelProviders.value[0]?.type || '',
-      modelName: modelProviders.value[0]?.models[0] || '',
-      systemPrompt: '',
-      toolNames: availableTools.value.map(t => t.toolName),
-      memoryMode: 'SUMMARY',
-      maxTurns: null,
-      useCustomTurns: false,
-      customTurns: 10,
-      kbIds: [],
-      ragMode: 'GENERIC',
-      recallLimit: 3,
-      scoreThreshold: 0.3
+      name: data.name ?? '',
+      description: data.description ?? '',
+      modelType: data.modelType ?? '',
+      modelName: data.modelName ?? '',
+      systemPrompt: data.systemPrompt ?? '',
+      toolNames: [...(data.toolNames ?? [])],
+      memoryMode: data.memoryMode || 'SUMMARY',
+      maxTurns: data.maxTurns ?? null,
+      useCustomTurns: data.maxTurns != null,
+      customTurns: data.maxTurns ?? 10,
+      kbIds: [...(data.kbIds ?? [])],
+      ragMode: data.ragMode && data.ragMode !== 'DISABLED' ? data.ragMode : 'GENERIC',
+      recallLimit: data.recallLimit ?? DEFAULT_FINAL_TOP_K,
+      scoreThreshold: data.scoreThreshold ?? DEFAULT_SCORE_THRESHOLD,
+      queryRewrite: data.queryRewrite ?? true,
+      contextMaxChars: data.contextMaxChars ?? DEFAULT_CONTEXT_MAX_CHARS,
+      rerankModelId: data.rerankModelId ?? ''
     })
   } catch (e) {
-    console.error(e)
+    console.error('加载智能体详情失败:', e)
+    ElMessage.error('加载智能体详情失败')
+    emit('update:show', false)
+  } finally {
+    loadingDetail.value = false
   }
 }
+
+/** 组装提交给后端的请求体（创建与更新共用） */
+function buildPayload() {
+  const hasKb = newAgent.kbIds.length > 0
+  return {
+    name: newAgent.name,
+    description: newAgent.description,
+    modelType: newAgent.modelType,
+    modelName: newAgent.modelName,
+    systemPrompt: newAgent.systemPrompt,
+    toolNames: newAgent.toolNames,
+    memoryMode: newAgent.memoryMode,
+    maxTurns: newAgent.memoryMode === 'FULL' ? null : (newAgent.useCustomTurns ? newAgent.customTurns : null),
+    kbIds: newAgent.kbIds,
+    ragMode: hasKb ? newAgent.ragMode : 'DISABLED',
+    recallLimit: hasKb ? newAgent.recallLimit : null,
+    scoreThreshold: hasKb ? newAgent.scoreThreshold : null,
+    queryRewrite: hasKb ? newAgent.queryRewrite : null,
+    contextMaxChars: hasKb ? newAgent.contextMaxChars : null,
+    rerankModelId: hasKb ? newAgent.rerankModelId : null
+  }
+}
+
+async function submit() {
+  if (!newAgent.name.trim() || submitting.value) return
+  submitting.value = true
+  try {
+    if (isEdit.value) {
+      await agentApi.updateAgent(props.agentId!, buildPayload())
+      ElMessage.success('已保存，下次对话生效')
+      emit('agent-updated')
+    } else {
+      await agentApi.createAgent(buildPayload())
+      emit('agent-created')
+      resetForm()
+    }
+    emit('update:show', false)
+  } catch (e: any) {
+    console.error(e)
+    ElMessage.error((isEdit.value ? '保存失败：' : '创建失败：') + (e?.response?.data?.message ?? e?.message ?? '未知错误'))
+  } finally {
+    submitting.value = false
+  }
+}
+
+// 每次打开弹窗：编辑模式回填详情，创建模式重置表单；同时刷新知识库列表
+watch(
+  () => props.show,
+  (visible) => {
+    if (!visible) return
+    loadKnowledgeBases()
+    if (props.agentId) {
+      fillFromAgent(props.agentId)
+    } else {
+      resetForm()
+    }
+  }
+)
 
 onMounted(() => {
   loadModelProviders()
   loadAvailableTools()
   loadKnowledgeBases()
+  loadRerankModels()
 })
 </script>
 
 <template>
   <el-dialog
     :model-value="show"
-    title="创建智能体"
+    :title="isEdit ? '编辑智能体' : '创建智能体'"
     width="720px"
     top="6vh"
     class="create-agent-dialog"
     @update:model-value="emit('update:show', $event)"
   >
-    <el-form label-position="top" class="agent-form" @submit.prevent>
+    <el-form v-loading="loadingDetail" label-position="top" class="agent-form" @submit.prevent>
       <!-- 1. 基本信息 -->
       <section class="form-section">
         <h3 class="section-title">基本信息</h3>
@@ -343,10 +461,21 @@ onMounted(() => {
             </el-radio-group>
           </el-form-item>
           <div class="form-grid">
-            <el-form-item label="最大召回段落数（Top-K）">
+            <el-form-item label="最终段数（Top-K）">
               <el-input-number v-model="newAgent.recallLimit" :min="1" :max="10" controls-position="right" />
+              <div class="field-hint">交给模型的原文段数；每段会按知识库类型自动补全相邻内容</div>
             </el-form-item>
-            <el-form-item label="最低相似度阈值（0 ~ 1）">
+            <el-form-item label="上下文总长上限（字）">
+              <el-input-number
+                v-model="newAgent.contextMaxChars"
+                :min="1000"
+                :max="50000"
+                :step="1000"
+                controls-position="right"
+              />
+              <div class="field-hint">超出时按相关度从低到高舍弃段落</div>
+            </el-form-item>
+            <el-form-item label="向量预过滤阈值（0 ~ 1）">
               <el-input-number
                 v-model="newAgent.scoreThreshold"
                 :min="0"
@@ -355,8 +484,23 @@ onMounted(() => {
                 :precision="2"
                 controls-position="right"
               />
+              <div class="field-hint">低于该相似度的向量结果不参与融合；关键词结果不受影响</div>
+            </el-form-item>
+            <el-form-item label="重排模型">
+              <el-select v-model="newAgent.rerankModelId" clearable placeholder="使用默认重排模型（未配置则不重排）">
+                <el-option
+                  v-for="m in rerankModels"
+                  :key="m.id"
+                  :value="m.id"
+                  :label="`${m.modelName}（${m.providerName}）`"
+                />
+              </el-select>
             </el-form-item>
           </div>
+          <el-form-item label="结合对话历史改写检索词">
+            <el-switch v-model="newAgent.queryRewrite" />
+            <div class="field-hint">追问时（如「那响应参数呢？」）先结合上文改写为完整问题再检索；每次提问多一次模型调用</div>
+          </el-form-item>
         </template>
       </section>
 
@@ -422,8 +566,13 @@ onMounted(() => {
 
     <template #footer>
       <el-button @click="emit('update:show', false)">取消</el-button>
-      <el-button type="primary" :disabled="!newAgent.name.trim() || !newAgent.modelName.trim()" @click="createAgent">
-        创建智能体
+      <el-button
+        type="primary"
+        :loading="submitting"
+        :disabled="!newAgent.name.trim() || !newAgent.modelName.trim()"
+        @click="submit"
+      >
+        {{ isEdit ? '保存' : '创建智能体' }}
       </el-button>
     </template>
   </el-dialog>

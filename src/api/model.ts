@@ -8,7 +8,7 @@ import api from './request'
  * - API Key 只写不读：仅在「新增 / 更换密钥」时通过 apiKeyPlain 上传，响应中只有 apiKeyConfigured
  */
 
-export type ModelType = 'CHAT' | 'EMBEDDING'
+export type ModelType = 'CHAT' | 'EMBEDDING' | 'RERANK'
 
 export interface ModelProviderResponse {
   id: string

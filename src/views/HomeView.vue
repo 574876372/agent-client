@@ -47,6 +47,7 @@ function switchTab(tab: 'agents' | 'conversations') {
 
 function openCreateAgent() {
   user.requireLogin(() => {
+    editingAgentId.value = null
     showCreateAgent.value = true
     switchTab('agents')
   })
@@ -85,8 +86,34 @@ async function selectConversation(conv: Conversation) {
 
 function handleAgentDeleted(id: string) {
   if (selectedAgent.value?.id === id) selectedAgent.value = null
+  // 后端会级联删除该智能体的全部对话，当前选中的对话若属于它则一并取消选中
+  if (selectedConversation.value?.agentId === id) selectedConversation.value = null
   loadAgents()
+  loadConversations()
 }
+
+/** 编辑中的智能体 ID；为 null 时弹窗处于创建模式 */
+const editingAgentId = ref<string | null>(null)
+
+function openEditAgent(agent: { id: string }) {
+  user.requireLogin(() => {
+    editingAgentId.value = agent.id
+    showCreateAgent.value = true
+  })
+}
+
+async function handleAgentUpdated() {
+  await loadAgents()
+  // 刷新当前对话头部展示的智能体信息
+  if (selectedAgent.value) {
+    selectedAgent.value = agents.value.find(a => a.id === selectedAgent.value!.id) ?? null
+  }
+}
+
+// 弹窗关闭后回到创建模式，避免下次点击「创建」时仍带着编辑对象
+watch(showCreateAgent, (visible) => {
+  if (!visible) editingAgentId.value = null
+})
 
 function handleConversationDeleted(id: string) {
   if (selectedConversation.value?.id === id) {
@@ -131,6 +158,7 @@ watch(
       @selectConversation="selectConversation"
       @conversation-deleted="handleConversationDeleted"
       @agent-deleted="handleAgentDeleted"
+      @editAgent="openEditAgent"
       @newChat="openNewChat"
       @createAgent="openCreateAgent"
     />
@@ -144,7 +172,12 @@ watch(
       @createAgent="openCreateAgent"
     />
 
-    <CreateAgentModal v-model:show="showCreateAgent" @agent-created="loadAgents" />
+    <CreateAgentModal
+      v-model:show="showCreateAgent"
+      :agentId="editingAgentId"
+      @agent-created="loadAgents"
+      @agent-updated="handleAgentUpdated"
+    />
 
     <NewChatModal
       v-model:show="showNewChat"
